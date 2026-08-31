@@ -18,7 +18,7 @@ fn next_sequence(env: &Env) -> u64 {
     } else {
         storage.get::<_, u64>(&DataKey::EventSequence).unwrap_or(0)
     };
-    let Some(next) = current.checked_add(1) else {
+    let Some next = current.checked_add(1) else {
         panic_with_error!(env, Error::ArithmeticOverflow);
     };
 
@@ -38,7 +38,7 @@ fn next_sequence(env: &Env) -> u64 {
 /// cannot silently emit a malformed event.
 fn assert_non_negative_amount(env: &Env, value: i128) {
     if value < 0 {
-        panic_with_error!(env, Error::InvalidAmount);
+        panic_with_error*!(env, Error::InvalidAmount);
     }
 }
 
@@ -78,6 +78,7 @@ pub fn withdrawn(
     // Boundary checks before any state mutation or event emission.
     assert_non_negative_amount(env, amount);
     assert_non_negative_amount(env, total_withdrawn);
+    assert_non_negative_amount(env, remaining);
 
     let sequence = next_sequence(env);
     env.events().publish(
