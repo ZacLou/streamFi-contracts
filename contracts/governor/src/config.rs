@@ -12,6 +12,11 @@ pub struct GovernorConfig {
     pub max_duration_seconds: u64,
     pub max_rate_per_second: i128,
     pub factory_address: Address,
+    /// Seconds a stream must remain paused before its recipient may call
+    /// `DripStream::force_cancel`. Governance-configurable per deployment
+    /// (e.g. 7 days for payroll, 90 days for long-horizon vesting) instead
+    /// of the previously hardcoded 30-day constant.
+    pub force_cancel_pause_threshold_seconds: u64,
 }
 
 /// Load the governor configuration from instance storage.
@@ -37,5 +42,8 @@ pub fn load(env: &Env) -> Result<GovernorConfig, Error> {
             .get(&DataKey::MaxRatePerSecond)
             .unwrap_or(1_000_000_000_000_000),
         factory_address,
+        force_cancel_pause_threshold_seconds: s
+            .get(&DataKey::ForceCancelPauseThresholdSeconds)
+            .unwrap_or(2_592_000), // 30 days
     })
 }

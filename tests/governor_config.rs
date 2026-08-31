@@ -151,6 +151,32 @@ fn min_duration_view_matches_config() {
     assert_eq!(client.min_duration(), 7_200);
 }
 
+/// `min_duration()` must error the same way `max_duration()`/`max_rate()`/
+/// `config()` do for an uninitialised governor, rather than silently
+/// returning a hardcoded default (#424) — otherwise a caller cannot tell
+/// "governor says 3600" from "governor doesn't exist yet".
+#[test]
+fn min_duration_errors_when_uninitialized() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let id = env.register_contract(None, DripGovernor);
+    let client = DripGovernorClient::new(&env, &id);
+
+    assert_eq!(
+        client.try_min_duration(),
+        Err(Ok(Error::NotInitialized))
+    );
+    assert_eq!(
+        client.try_min_duration().is_err(),
+        client.try_max_duration().is_err()
+    );
+    assert_eq!(
+        client.try_min_duration().is_err(),
+        client.try_max_rate().is_err()
+    );
+}
+
 #[test]
 fn zero_min_duration_is_rejected() {
     let env = Env::default();

@@ -173,33 +173,15 @@ impl TokenVault {
         Ok(())
     }
 
-    pub fn set_operator_withdraw_limit(
-        env: Env,
-        caller: Address,
-        new_limit: i128,
-    ) -> Result<(), Error> {
-        assert_not_paused(&env)?;
-        let owner = get_owner(&env).ok_or(Error::NotInitialized)?;
-        if caller != owner {
-            return Err(Error::NotAuthorized);
-        }
-        caller.require_auth();
-
-        if new_limit <= 0 {
-            return Err(Error::InvalidAmount);
-        }
-
-        let old_limit = get_operator_withdraw_limit(&env).unwrap_or(0);
-        bump_instance(&env);
-        set_operator_withdraw_limit(&env, &new_limit);
-        events::operator_withdraw_limit_set(&env, &caller, old_limit, new_limit);
-        Ok(())
-    }
-
+    /// Raising `max_limit` requires `caller == owner`; an operator may only
+    /// lower it. `max_limit` is the vault's core risk parameter — it caps
+    /// total exposure — so a delegated operator key (a hot wallet meant for
+    /// day-to-day operations) must not be able to expand it. This matches
+    /// the general principle that delegated keys can reduce but not expand
+    /// authority; operators can still tighten the cap on their own.
     pub fn set_limit(env: Env, caller: Address, new_limit: i128) -> Result<(), Error> {
         assert_not_paused(&env)?;
         let owner = get_owner(&env).ok_or(Error::NotInitialized)?;
-        require_owner_or_operator(&env, &caller, &owner)?;
 
         if new_limit <= 0 {
             return Err(Error::InvalidAmount);
@@ -209,6 +191,16 @@ impl TokenVault {
             return Err(Error::LimitExceeded);
         }
         let old_limit = get_max_limit(&env).ok_or(Error::ArithmeticOverflow)?;
+
+        if new_limit > old_limit {
+            if caller != owner {
+                return Err(Error::NotAuthorized);
+            }
+            caller.require_auth();
+        } else {
+            require_owner_or_operator(&env, &caller, &owner)?;
+        }
+
         bump_instance(&env);
         set_max_limit(&env, &new_limit);
         events::limit_set(&env, &caller, old_limit, new_limit);
@@ -217,8 +209,11 @@ impl TokenVault {
 
     // ── Operator delegation (owner-gated) ─────────────────────────────────
 
-    /// Owner designates an operator who can perform owner-level actions
-    /// (`withdraw`, `set_limit`) on this vault.
+    /// Owner designates an operator who can perform day-to-day actions on
+    /// this vault: `withdraw`, and `set_limit` to *lower* (not raise) the
+    /// deposit cap. Raising `max_limit` remains owner-only — see
+    /// [`TokenVault::set_limit`] — so a compromised operator key cannot
+    /// expand the vault's risk exposure.
     ///
     /// Only the owner may call this. Matches `DripStream::set_operator` — the
     /// owner can delegate day-to-day operations to a hot wallet while keeping

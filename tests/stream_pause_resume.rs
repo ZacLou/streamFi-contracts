@@ -51,6 +51,7 @@ fn deploy_stream<'a>(
         &now,
         &(now + duration),
         &false,
+        &2_592_000_u64,
     );
 
     (client, token_addr)

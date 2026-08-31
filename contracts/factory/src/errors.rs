@@ -51,4 +51,10 @@ pub enum Error {
     /// is disabled there is no way to recover the funds before the stream
     /// starts.
     StartTimeTooFarInFuture = 29,
+    /// `upgrade` was called with a WASM hash whose storage layout version
+    /// does not match `DataKey::FactoryStorageVersion`. Prevents swapping in
+    /// code that assumes an incompatible shape for persisted state
+    /// (`StreamCount`, `StreamAddr`, the paged indices, etc.) without an
+    /// explicit migration.
+    StorageVersionMismatch = 30,
 }

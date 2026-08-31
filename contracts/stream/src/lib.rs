@@ -62,6 +62,7 @@ impl DripStream {
         start_time: u64,
         end_time: u64,
         clawback_enabled: bool,
+        force_cancel_pause_threshold_seconds: u64,
     ) {
         if env.storage().instance().has(&DataKey::Config) {
             panic_with_error!(&env, Error::AlreadyInitialized);
@@ -74,6 +75,12 @@ impl DripStream {
         // (ADR-001: one contract per stream), so this contract must
         // enforce the amount check itself rather than trusting the caller.
         if rate_per_second <= 0 {
+            panic_with_error!(&env, Error::InvalidAmount);
+        }
+
+        // A zero threshold would make `force_cancel` callable the instant a
+        // stream is paused, defeating its purpose as a bounded grace period.
+        if force_cancel_pause_threshold_seconds == 0 {
             panic_with_error!(&env, Error::InvalidAmount);
         }
 
@@ -123,6 +130,10 @@ impl DripStream {
 
         let s = env.storage().instance();
         s.set(&DataKey::StorageVersion, &storage::CURRENT_STORAGE_VERSION);
+        s.set(
+            &DataKey::ForceCancelPauseThresholdSecs,
+            &force_cancel_pause_threshold_seconds,
+        );
 
         // Write the initial state before emitting the creation event so the
         // event sequence lives with the consolidated `Config` payload from the
@@ -632,15 +643,30 @@ impl DripStream {
     /// Recipient force-cancels a stream that has been paused beyond a threshold.
     ///
     /// Prevents the sender from indefinitely pausing the stream to hold
-    /// unstreamed tokens hostage. The threshold is hardcoded to 30 days
-    /// (2_592_000 seconds) — a governance-configurable version is planned.
-    /// Settles atomically like `cancel()`: earned tokens go to recipient,
-    /// unstreamed refund goes to sender.
+    /// unstreamed tokens hostage. The threshold defaults to 30 days
+    /// (2_592_000 seconds) but is governance-configurable per deployment —
+    /// see `DripGovernor::set_force_cancel_pause_threshold` and
+    /// `DataKey::ForceCancelPauseThresholdSecs`. Settles atomically like
+    /// `cancel()`: earned tokens go to recipient, unstreamed refund goes to
+    /// sender.
     pub fn force_cancel(env: Env) -> Result<(), Error> {
         state::with_guard(&env, Self::_force_cancel)
     }
 
     fn _force_cancel(env: &Env) -> Result<(), Error> {
+        // Governance-configurable per deployment (see
+        // `DripGovernor::set_force_cancel_pause_threshold`); set at
+        // `initialize()` from the factory's read of `GovernorConfig`.
+        // Falls back to the historical 30-day default for streams
+        // initialized before this field existed, or deployed directly
+        // without going through the factory.
+        const DEFAULT_PAUSE_THRESHOLD_SECS: u64 = 2_592_000; // 30 days
+        let pause_threshold_secs: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::ForceCancelPauseThresholdSecs)
+            .unwrap_or(DEFAULT_PAUSE_THRESHOLD_SECS);
+
         ttl::bump(env);
 
         let info = state::load(env);
@@ -651,7 +677,7 @@ impl DripStream {
 
         let now = env.ledger().timestamp();
         let paused_secs = now.saturating_sub(info.paused_at);
-        if paused_secs < ttl::MAX_PAUSE_SECS {
+        if paused_secs < pause_threshold_secs {
             return Err(Error::PauseThresholdNotMet);
         }
 

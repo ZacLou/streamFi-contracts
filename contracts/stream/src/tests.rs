@@ -72,6 +72,7 @@ impl Setup {
             &now,                   // start_time = now
             &(now + duration_secs), // end_time
             &clawback,
+            &2_592_000_u64,
         );
 
         // Leak the env so we can return 'static references — acceptable in tests.
@@ -507,6 +508,7 @@ fn initialize_rejects_zero_rate() {
         &now,
         &(now + 3_600),
         &false,
+        &2_592_000_u64,
     );
 }
 
@@ -535,6 +537,7 @@ fn initialize_rejects_negative_rate() {
         &now,
         &(now + 3_600),
         &false,
+        &2_592_000_u64,
     );
 }
 
@@ -549,7 +552,7 @@ fn re_initializing_an_active_stream_panics() {
     // to themselves via cancel()/clawback().
     let attacker = Address::generate(&s.env);
     s.client
-        .initialize(&attacker, &attacker, &s.token.address, &1, &0, &0, &false);
+        .initialize(&attacker, &attacker, &s.token.address, &1, &0, &0, &false, &2_592_000_u64);
 }
 
 // ── Time-range boundary guard (issue #81) ────────────────────────────────────
@@ -583,6 +586,7 @@ fn initialize_rejects_end_time_before_start() {
         &now,           // start_time
         &(now - 3_600), // end_time BEFORE start_time → malformed
         &false,
+        &2_592_000_u64,
     );
 }
 
@@ -614,6 +618,7 @@ fn initialize_rejects_end_time_equal_start() {
         &now, // start_time
         &now, // end_time == start_time → zero-duration, malformed
         &false,
+        &2_592_000_u64,
     );
 }
 
@@ -644,6 +649,7 @@ fn initialize_accepts_open_ended_stream() {
         &now,
         &0, // open-ended → valid
         &false,
+        &2_592_000_u64,
     );
 
     let inf = client.info();
@@ -964,7 +970,7 @@ fn extend_duration_rejected_for_open_ended() {
     let stream_id = env.register_contract(None, DripStream);
     let client = DripStreamClient::new(&env, &stream_id);
 
-    client.initialize(&sender, &recipient, &token_addr, &100, &now, &0, &false);
+    client.initialize(&sender, &recipient, &token_addr, &100, &now, &0, &false, &2_592_000_u64);
 
     let result = client.try_extend_duration(&sender, &100);
     assert_eq!(result, Err(Ok(Error::InvalidTimeRange)));
@@ -997,6 +1003,7 @@ fn extend_duration_rejects_on_arithmetic_overflow() {
         &now,
         &(now + 10),
         &false,
+        &2_592_000_u64,
     );
 
     let result = client.try_extend_duration(&sender, &2);
@@ -1273,7 +1280,7 @@ fn top_up_and_extend_rejected_for_open_ended_stream() {
     let stream_id = env.register_contract(None, DripStream);
     let client = DripStreamClient::new(&env, &stream_id);
 
-    client.initialize(&sender, &recipient, &token_addr, &100, &now, &0, &false);
+    client.initialize(&sender, &recipient, &token_addr, &100, &now, &0, &false, &2_592_000_u64);
 
     let result = client.try_top_up_and_extend(&sender, &10_000, &100);
     assert_eq!(result, Err(Ok(Error::InvalidTimeRange)));

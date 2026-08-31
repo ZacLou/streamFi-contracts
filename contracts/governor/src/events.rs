@@ -124,6 +124,11 @@ pub fn set_max_duration(env: &Env, caller: &Address, old_seconds: u64, new_secon
     );
 }
 
+pub fn set_force_cancel_pause_threshold(env: &Env, caller: &Address, seconds: u64) {
+    env.events()
+        .publish((symbol_short!("fc_pause"), caller.clone()), seconds);
+}
+
 pub fn paused(env: &Env, caller: &Address, paused_at: u64) {
     env.events()
         .publish((symbol_short!("paused"), caller.clone()), paused_at);

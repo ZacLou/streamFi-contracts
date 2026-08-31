@@ -198,7 +198,7 @@ fn upgrade_stream_wasm_accepts_after_unpause() {
 fn upgrade_rejects_zero_hash() {
     let s = Setup::new();
     let zero_hash = BytesN::from_array(&s.env, &[0u8; 32]);
-    let result = s.client.try_upgrade(&zero_hash);
+    let result = s.client.try_upgrade(&zero_hash, &1u32);
     assert_eq!(result, Err(Ok(Error::InvalidWasmHash)));
 }
 
@@ -208,7 +208,7 @@ fn upgrade_passes_auth_and_zero_hash_check() {
     // Zero hash is rejected before reaching the host-level WASM swap.
     let zero_hash = BytesN::from_array(&s.env, &[0u8; 32]);
     assert_eq!(
-        s.client.try_upgrade(&zero_hash),
+        s.client.try_upgrade(&zero_hash, &1u32),
         Err(Ok(Error::InvalidWasmHash))
     );
     // A non-zero hash passes validation; the host-level WASM swap
@@ -222,8 +222,22 @@ fn upgrade_rejects_when_paused() {
     let s = Setup::new();
     s.client.pause();
     let valid_hash = BytesN::from_array(&s.env, &[2u8; 32]);
-    let result = s.client.try_upgrade(&valid_hash);
+    let result = s.client.try_upgrade(&valid_hash, &1u32);
     assert_eq!(result, Err(Ok(Error::ContractPaused)));
+}
+
+#[test]
+fn upgrade_rejects_storage_version_mismatch() {
+    let s = Setup::new();
+    let valid_hash = BytesN::from_array(&s.env, &[2u8; 32]);
+    let result = s.client.try_upgrade(&valid_hash, &2u32);
+    assert_eq!(result, Err(Ok(Error::StorageVersionMismatch)));
+}
+
+#[test]
+fn storage_version_set_on_initialize() {
+    let s = Setup::new();
+    assert_eq!(s.client.storage_version(), 1);
 }
 
 #[test]
@@ -232,7 +246,7 @@ fn upgrade_blocked_while_paused_then_allowed_after_unpause() {
     s.client.pause();
     let valid_hash = BytesN::from_array(&s.env, &[2u8; 32]);
     assert_eq!(
-        s.client.try_upgrade(&valid_hash),
+        s.client.try_upgrade(&valid_hash, &1u32),
         Err(Ok(Error::ContractPaused))
     );
 
@@ -240,7 +254,7 @@ fn upgrade_blocked_while_paused_then_allowed_after_unpause() {
     // After unpausing, zero-hash validation still rejects.
     let zero_hash = BytesN::from_array(&s.env, &[0u8; 32]);
     assert_eq!(
-        s.client.try_upgrade(&zero_hash),
+        s.client.try_upgrade(&zero_hash, &1u32),
         Err(Ok(Error::InvalidWasmHash))
     );
 }

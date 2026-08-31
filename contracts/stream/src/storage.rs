@@ -53,6 +53,16 @@ pub enum DataKey {
     /// cancel, clawback, top_up, extend_duration) on behalf of the sender.
     /// Absent key means no operator has been delegated.
     Operator,
+    /// Seconds a stream must remain paused before `force_cancel` becomes
+    /// callable by the recipient. Set once at `initialize()` from the
+    /// value `DripFactory::create_stream` read from `GovernorConfig` at
+    /// deploy time (governance-configurable per deployment; see
+    /// `DripGovernor::set_force_cancel_pause_threshold`). Stored on the
+    /// stream itself — rather than read cross-contract on every
+    /// `force_cancel` call — because ADR-001 keeps this contract's hot
+    /// path free of cross-contract calls; a stream deployed directly
+    /// (bypassing the factory) falls back to the historical 30-day default.
+    ForceCancelPauseThresholdSecs,
 }
 
 #[contracttype]

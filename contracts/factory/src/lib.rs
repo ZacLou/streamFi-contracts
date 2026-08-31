@@ -67,6 +67,10 @@ impl DripFactory {
             .instance()
             .set(&DataKey::GovernorAddress, &governor);
         env.storage().instance().set(&DataKey::StreamCount, &0_u64);
+        env.storage().instance().set(
+            &DataKey::FactoryStorageVersion,
+            &storage::CURRENT_STORAGE_VERSION,
+        );
     }
 
     /// Deploy a new DripStream and register it.
@@ -260,6 +264,12 @@ impl DripFactory {
         };
 
         // ── Deploy DripStream ────────────────────────────────────────────
+        // `config.force_cancel_pause_threshold_seconds` was already read
+        // above (governor cross-contract call for bounds enforcement), so
+        // passing it into `initialize` here is free — no extra cross-contract
+        // call. The deployed stream stores it and reads it locally in
+        // `force_cancel`, keeping that contract's hot path free of
+        // cross-contract calls per ADR-001.
         let init_args = soroban_sdk::vec![
             &env,
             sender.to_val(),
@@ -269,6 +279,7 @@ impl DripFactory {
             start_time.into_val(&env),
             end_time.into_val(&env),
             clawback.into_val(&env),
+            config.force_cancel_pause_threshold_seconds.into_val(&env),
         ];
 
         let stream_addr = deploy::deploy_stream(&env, &wasm_hash, stream_id, init_args);
@@ -626,7 +637,19 @@ impl DripFactory {
     /// This is distinct from `upgrade_stream_wasm`, which only updates the
     /// WASM hash used for *future* `create_stream` deployments. `upgrade`
     /// replaces the factory's own implementation.
-    pub fn upgrade(env: Env, new_wasm_hash: BytesN<32>) -> Result<(), Error> {
+    ///
+    /// `expected_storage_version` must equal the *currently stored*
+    /// `DataKey::FactoryStorageVersion` (readable via `storage_version()`).
+    /// Upgrade tooling should read `storage_version()` and the new WASM's
+    /// own `storage::CURRENT_STORAGE_VERSION` before submitting this call,
+    /// and pass the value it confirmed matches — this guards against a
+    /// storage-layout change being deployed onto existing state without an
+    /// explicit migration step, mirroring `DripStream::storage_version`.
+    pub fn upgrade(
+        env: Env,
+        new_wasm_hash: BytesN<32>,
+        expected_storage_version: u32,
+    ) -> Result<(), Error> {
         let governor: Address = env
             .storage()
             .instance()
@@ -642,10 +665,32 @@ impl DripFactory {
             return Err(Error::ContractPaused);
         }
 
+        let stored_version: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::FactoryStorageVersion)
+            .ok_or(Error::NotInitialized)?;
+        if expected_storage_version != stored_version {
+            return Err(Error::StorageVersionMismatch);
+        }
+
         ttl::bump_instance(&env);
         env.deployer().update_current_contract_wasm(new_wasm_hash);
         events::upgraded(&env, &governor, env.ledger().timestamp());
         Ok(())
+    }
+
+    /// Storage layout version this instance was initialized with.
+    ///
+    /// Upgrade tooling should read this before calling `upgrade` and confirm
+    /// it matches both the value passed as `expected_storage_version` and
+    /// the new WASM's own expected version. Mirrors
+    /// `DripStream::storage_version`.
+    pub fn storage_version(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::FactoryStorageVersion)
+            .unwrap_or(0)
     }
 
     /// Emergency halt: stop all new stream creation.

@@ -118,6 +118,15 @@ pub struct StreamPage {
 ///   per-stream addresses, per-user indices). Avoids hitting instance size limits
 ///   as the protocol scales. Each entry has its own TTL and can be extended independently.
 
+/// Current storage layout version for this contract.
+///
+/// Written once at `initialize()` and checked by `upgrade()` before
+/// swapping the factory's own WASM, mirroring `DripStream::CURRENT_STORAGE_VERSION`.
+/// Bump this and add an explicit migration path whenever a future upgrade
+/// changes the shape of persisted state (`StreamCount`, `StreamAddr`, the
+/// paged `BySender*`/`ByRecipient*` indices, `LastBumpedId`, etc.).
+pub const CURRENT_STORAGE_VERSION: u32 = 1;
+
 #[contracttype]
 pub enum DataKey {
     /// **Instance storage.** Monotonically incrementing stream counter.
@@ -222,4 +231,12 @@ pub enum DataKey {
     /// Key: `DataKey::ByRecipientCount(Address)` — recipient address
     /// Value: `u32` — total count used to derive page boundaries
     ByRecipientCount(Address),
+
+    /// **Instance storage.** Storage layout version this instance was
+    /// initialized with. Written once at `initialize()`; checked by
+    /// `upgrade()` before swapping WASM so an incompatible storage-layout
+    /// change cannot be deployed onto existing state silently.
+    /// Key: `DataKey::FactoryStorageVersion` (no inner type, discriminant only)
+    /// Value: `u32`
+    FactoryStorageVersion,
 }

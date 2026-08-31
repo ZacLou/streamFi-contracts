@@ -49,6 +49,9 @@ pub enum DataKey {
     MaxDurationSeconds,
     /// The DripFactory contract this governor controls
     FactoryAddress,
+    /// Seconds a stream must remain paused before `DripStream::force_cancel`
+    /// becomes callable by the recipient.
+    ForceCancelPauseThresholdSeconds,
     /// Presence marks that `account` holds `role`. The stored value is an
     /// unused `bool`; membership is expressed entirely by the key existing.
     Role(RoleKey),
