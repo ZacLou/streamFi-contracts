@@ -1875,3 +1875,55 @@ fn save_migrates_legacy_keys_to_config_once() {
         assert_eq!(info.recipient, recipient);
     });
 }
+
+#[test]
+fn save_migrates_legacy_per_field_keys_to_config() {
+    // Regression test for #468: a stream written with the old per-field
+    // keys (pre-consolidation) must be migrated to the single DataKey::Config
+    // on the first mutating call, and all legacy keys must be removed.
+    let s = Setup::new(100, 3600, false);
+    let env = &s.env;
+
+    // Snapshot the canonical state, then remove the consolidated Config key.
+    let info = s.client.info();
+    let instance = env.storage().instance();
+    instance.remove(&DataKey::Config);
+
+    // Write the legacy per-field layout to simulate a v0 stream.
+    instance.set(&DataKey::Sender, &info.sender);
+    instance.set(&DataKey::Recipient, &info.recipient);
+    instance.set(&DataKey::Token, &info.token);
+    instance.set(&DataKey::RatePerSecond, &info.rate_per_second);
+    instance.set(&DataKey::StartTime, &info.start_time);
+    instance.set(&DataKey::EndTime, &info.end_time);
+    instance.set(&DataKey::Withdrawn, &info.withdrawn);
+    instance.set(&DataKey::PausedAt, &info.paused_at);
+    instance.set(&DataKey::Flags, &info.flags);
+    instance.set(&DataKey::EventSequence, &info.event_sequence);
+
+    // Trigger migration via a mutating method that calls state::save.
+    s.client.pause(&s.sender);
+
+    // After migration, Config must exist...
+    assert!(instance.has(&DataKey::Config));
+    // ...and every legacy key must be gone.
+    assert!(!instance.has(&DataKey::Sender));
+    assert!(!instance.has(&DataKey::Recipient));
+    assert!(!instance.has(&DataKey::Token));
+    assert!(!instance.has(&DataKey::RatePerSecond));
+    assert!(!instance.has(&DataKey::StartTime));
+    assert!(!instance.has(&DataKey::EndTime));
+    assert!(!instance.has(&DataKey::Withdrawn));
+    assert!(!instance.has(&DataKey::PausedAt));
+    assert!(!instance.has(&DataKey::Flags));
+    assert!(!instance.has(&DataKey::EventSequence));
+    assert!(!instance.has(&DataKey::ClawbackEnabled));
+    assert!(!instance.has(&DataKey::Cancelled));
+
+    // The migrated state should still be readable and correctly paused.
+    let migrated = s.client.info();
+    assert!(migrated.is_paused());
+    assert_eq!(migrated.sender, info.sender);
+    assert_eq!(migrated.recipient, info.recipient);
+    assert_eq!(migrated.flags, info.flags | FLAG_PAUSED);
+}
