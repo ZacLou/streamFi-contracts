@@ -22,4 +22,7 @@ pub enum Error {
     ReentrancyForbidden = 16,
     OperatorAlreadySet = 17,
     NotInitialized = 18,
+    BackdatedStream = 19,
+    StreamUnderfunded = 20,
+    InvalidRecipient = 21,
 }

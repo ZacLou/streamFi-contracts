@@ -744,6 +744,12 @@ impl DripStream {
     /// Useful for UIs that want to show "X streamed, Y withdrawn, Z remaining"
     /// without the caller needing to reimplement the rate × elapsed math.
     pub fn streamed_total(env: Env) -> i128 {
+        Self::total_streamed(env)
+    }
+
+    /// Read-only alias for [`streamed_total`]: cumulative streamed amount at
+    /// the current ledger time, matching the on-chain `streamed_amount` math.
+    pub fn total_streamed(env: Env) -> i128 {
         let info = state::load(&env);
         if info.is_cancelled() {
             return 0;

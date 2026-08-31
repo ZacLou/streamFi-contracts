@@ -251,12 +251,17 @@ export class StreamSDK {
   async getStreamedTotal(streamId: string): Promise<string> {
     const result = await this.server.getContractData(
       streamId,
-      xdr.ScVal.scvSymbol('streamed_total')
+      xdr.ScVal.scvSymbol('total_streamed')
     );
     
     if (result && result.val().i128) {
       return result.val().i128().toString();
     }
     return '0';
+  }
+
+  /** Alias matching the on-chain `total_streamed()` view method. */
+  async getTotalStreamed(streamId: string): Promise<string> {
+    return this.getStreamedTotal(streamId);
   }
 }
