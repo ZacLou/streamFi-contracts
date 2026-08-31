@@ -64,6 +64,7 @@ pub fn withdrawn(
     // Boundary checks before any state mutation or event emission.
     assert_non_negative_amount(env, amount);
     assert_non_negative_amount(env, total_withdrawn);
+    assert_non_negative_amount(env, remaining);
 
     let sequence = next_sequence(env);
     env.events().publish(

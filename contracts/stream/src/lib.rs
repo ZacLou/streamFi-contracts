@@ -194,10 +194,6 @@ impl DripStream {
         // the funded balance is whatever `top_up` added, so `available` can
         // exceed `balance`; without this clamp the `transfer` below reverts and
         // blocks *every* withdrawal — even the portion that is funded.
-        //
-        // `balance` is read exactly once and reused for both the clamp and the
-        // post-transfer `remaining` figure so a fee-on-transfer / rebasing token
-        // can never feed a stale subtraction.
         let balance = tk.balance(&contract_addr);
         let to_send = amount.min(available).min(balance);
 
@@ -217,13 +213,17 @@ impl DripStream {
         updated.withdrawn = new_withdrawn;
         state::save(env, &updated);
 
-        // Perform the transfer, then derive `remaining` from the single balance
-        // captured above. `checked_sub` (rather than a bare `-`) guarantees no
-        // underflow panic even if a fee-on-transfer / rebasing token leaves the
-        // contract with less than `to_send`; the worst case is a conservative 0.
+        // Perform the transfer, then read the REAL post-transfer balance for the
+        // event's `remaining` field. Projecting `balance - to_send` from the
+        // pre-transfer read (even via `checked_sub`) is stale for a
+        // fee-on-transfer / rebasing token, which can move a different amount
+        // than `to_send`; the event must report the balance an indexer would
+        // actually observe after the withdrawal. A real token balance can never
+        // be negative, and `events::withdrawn` asserts it like the other amount
+        // fields as a boundary check.
         tk.transfer(&contract_addr, &info.recipient, &to_send);
 
-        let remaining = balance.checked_sub(to_send).unwrap_or(0);
+        let remaining = tk.balance(&contract_addr);
         events::withdrawn(env, &info.recipient, to_send, new_withdrawn, remaining);
         Ok(to_send)
     }
