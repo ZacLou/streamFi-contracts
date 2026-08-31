@@ -22,4 +22,5 @@ pub enum Error {
     ReentrancyForbidden = 16,
     OperatorAlreadySet = 17,
     NotInitialized = 18,
+    InvalidRecipient = 19,
 }

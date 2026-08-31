@@ -682,6 +682,21 @@ impl DripStream {
         state::assert_not_cancelled(&info)?;
         info.recipient.require_auth();
 
+        // Reject invalid recipient addresses before mutating state; the
+        // recipient is the only authority able to withdraw, and a zero or
+        // self-address would strand the stream's remaining balance.
+        if is_zero_address(env, &new_recipient) || new_recipient == info.recipient {
+            return Err(Error::InvalidRecipient);
+        }
+
+        // A bounded stream that has already ended is terminal: the remaining
+        // entitlement is fully fixed and the recipient transfer would emit a
+        // misleading event without changing future withdrawals.
+        let now = env.ledger().timestamp();
+        if info.end_time > 0 && now >= info.end_time {
+            return Err(Error::StreamEnded);
+        }
+
         let mut updated = info.clone();
         updated.recipient = new_recipient.clone();
         state::save(env, &updated);
