@@ -21,7 +21,7 @@ use drip_common::is_zero_address;
 
 pub use errors::Error;
 use storage::DataKey;
-pub use storage::{BatchStreamRequest, FactoryStatus, FeeEstimate, StreamOperation, StreamPage};
+pub use storage::{Aggregate, BatchStreamRequest, FactoryStatus, FeeEstimate, StreamOperation, StreamPage};
 
 /// Maximum number of streams accepted by a single `create_batch_streams`
 /// (and `cancel_batch_streams`/`stream_addresses`) call. The batch
@@ -67,6 +67,10 @@ impl DripFactory {
             .instance()
             .set(&DataKey::GovernorAddress, &governor);
         env.storage().instance().set(&DataKey::StreamCount, &0_u64);
+        env.storage().instance().set(
+            &DataKey::Aggregate,
+            &Aggregate { total_supply: 0, active_streams: 0 },
+        );
         env.storage().instance().set(
             &DataKey::FactoryStorageVersion,
             &storage::CURRENT_STORAGE_VERSION,
@@ -315,6 +319,22 @@ impl DripFactory {
             .instance()
             .set(&DataKey::StreamCount, &(stream_count + 1));
 
+        // Increment aggregate counters after the new stream is fully persisted.
+        let aggregate: Aggregate = env
+            .storage()
+            .instance()
+            .get(&DataKey::Aggregate)
+            .unwrap_or(Aggregate { total_supply: 0, active_streams: 0 });
+        aggregate.total_supply = aggregate
+            .total_supply
+            .checked_add(1)
+            .expect("total_supply overflow");
+        aggregate.active_streams = aggregate
+            .active_streams
+            .checked_add(1)
+            .expect("active_streams overflow");
+        env.storage().instance().set(&DataKey::Aggregate, &aggregate);
+
         // Persistent storage entry 2 — BySender (paged):
         //   Key:   DataKey::BySenderPage(sender, page)
         //          XDR serialization: [discriminant: u32][sender: XDR Address][page: u32]
@@ -471,6 +491,17 @@ impl DripFactory {
         for stream_addr in unique_addresses.iter() {
             let stream_client = drip_stream::DripStreamClient::new(&env, &stream_addr);
             stream_client.cancel(&sender);
+
+            // Decrement the active-stream counter for every factory-routed
+            // cancellation. Direct cancellations that bypass the factory can
+            // be accounted for via `record_cancel` below.
+            let mut aggregate: Aggregate = env
+                .storage()
+                .instance()
+                .get(&DataKey::Aggregate)
+                .unwrap_or(Aggregate { total_supply: 0, active_streams: 0 });
+            aggregate.active_streams = aggregate.active_streams.saturating_sub(1);
+            env.storage().instance().set(&DataKey::Aggregate, &aggregate);
         }
 
         Ok(())
@@ -495,6 +526,35 @@ impl DripFactory {
         Ok(out)
     }
 
+
+    /// Returns the factory's aggregate counters: total streams ever created
+    /// and the number still active.
+    pub fn aggregate(env: Env) -> Aggregate {
+        env.storage()
+            .instance()
+            .get(&DataKey::Aggregate)
+            .unwrap_or(Aggregate { total_supply: 0, active_streams: 0 })
+    }
+
+    /// Permissionless hook for a stream contract (or anyone acting on its
+    /// behalf) to report that a stream has been cancelled.
+    ///
+    /// Direct cancellations that do not go through `cancel_batch_streams`
+    /// can call this to keep the aggregate `active_streams` counter accurate.
+    /// The call is idempotent: cancelling an already-zero counter leaves it at
+    /// zero. Stream contracts that were not deployed through this factory
+    /// cannot meaningfully decrement the counter below its true value because
+    /// each decrement corresponds to a stream that the factory counted at
+    /// creation time.
+    pub fn record_cancel(env: Env) {
+        let mut aggregate: Aggregate = env
+            .storage()
+            .instance()
+            .get(&DataKey::Aggregate)
+            .unwrap_or(Aggregate { total_supply: 0, active_streams: 0 });
+        aggregate.active_streams = aggregate.active_streams.saturating_sub(1);
+        env.storage().instance().set(&DataKey::Aggregate, &aggregate);
+    }
     /// Paginated list of stream IDs created by `sender`, paired with the
     /// sender's total stream count.
     ///
