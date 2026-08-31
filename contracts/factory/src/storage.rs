@@ -100,6 +100,23 @@ pub struct StreamPage {
     pub total: u32,
 }
 
+/// Aggregate counters for the whole factory registry.
+///
+/// Maintained incrementally on every successful `create_stream` and
+/// factory-routed cancellation so dashboards can display totals without
+/// paging the entire sender/recipient index.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Aggregate {
+    /// Total number of streams ever created through this factory.
+    /// Equivalent to the historical maximum of `StreamCount`.
+    pub total_supply: u64,
+    /// Number of streams that have not yet been cancelled.
+    /// Decremented by `cancel_batch_streams` and by the public
+    /// `record_cancel` hook for direct stream cancellations.
+    pub active_streams: u64,
+}
+
 /// Storage keys for the DripFactory contract.
 ///
 /// The `#[contracttype]` macro serializes each variant as an XDR tagged union:
@@ -184,6 +201,11 @@ pub enum DataKey {
     /// Value: `u64` — the last stream ID whose persistent `StreamAddr` TTL
     /// was bumped by the walker. Missing entry is treated as `0`.
     LastBumpedId,
+
+    /// **Instance storage.** Aggregate counters maintained on create/cancel.
+    /// Key: `DataKey::Aggregate` (no inner type, discriminant only)
+    /// Value: `Aggregate` — total supply and active-stream count.
+    Aggregate,
 
     /// **Instance storage.** Reentrancy guard for `create_stream`.
     /// Key: `DataKey::CreateLock` (no inner type, discriminant only)
