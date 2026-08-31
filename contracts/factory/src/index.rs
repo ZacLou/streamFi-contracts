@@ -360,12 +360,12 @@ pub fn migrate_recipient_index(env: &Env, recipient: Address, max_pages: u32) ->
         .unwrap_or_else(|| env.storage().persistent().get(&count_key).unwrap_or(0))
 }
 
-pub fn streams_by_sender(env: &Env, sender: Address, offset: u32, limit: u32) -> Vec<u64> {
+pub fn streams_by_sender(env: &Env, sender: Address, offset: u32, limit: u32) -> StreamPage {
     let count_key = DataKey::BySenderCount(sender.clone());
     let legacy_key = DataKey::BySender(sender.clone());
     let cursor_key = DataKey::BySenderMigrationCursor(sender.clone());
     let legacy_count_key = DataKey::BySenderLegacyCount(sender.clone());
-    read_index(
+    let ids = read_index(
         env,
         &count_key,
         &legacy_key,
@@ -384,7 +384,7 @@ pub fn streams_by_recipient(env: &Env, recipient: Address, offset: u32, limit: u
     let legacy_key = DataKey::ByRecipient(recipient.clone());
     let cursor_key = DataKey::ByRecipientMigrationCursor(recipient.clone());
     let legacy_count_key = DataKey::ByRecipientLegacyCount(recipient.clone());
-    read_index(
+    let ids = read_index(
         env,
         &count_key,
         &legacy_key,

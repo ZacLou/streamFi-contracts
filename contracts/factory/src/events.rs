@@ -37,3 +37,15 @@ pub fn upgraded(env: &Env, governor: &Address, upgraded_at: u64) {
     env.events()
         .publish((symbol_short!("upgraded"), governor.clone()), upgraded_at);
 }
+
+/// Emitted on every successfully created stream, once the governed protocol
+/// fee has been routed to its recipient.
+///
+/// Topics: `("fee", fee_recipient)` — the address that received the fee.
+/// Data:   `fee` — the amount routed (in stroops). Always the deposit's
+///         `fee_bps / 10_000`, and `0` when the deposit is small enough that
+///         the basis-point rounding yields nothing (or `fee_bps` is 0).
+pub fn protocol_fee_charged(env: &Env, fee_recipient: &Address, fee: i128) {
+    env.events()
+        .publish((symbol_short!("fee"), fee_recipient.clone()), fee);
+}
