@@ -232,7 +232,7 @@ impl DripStream {
         Ok(to_send)
     }
 
-    /// Sender (or operator) cancels the stream.
+    /// Sender or delegated operator cancels the stream.
     ///
     /// Settles everything atomically:
     ///   - Tokens the recipient has earned (but not yet withdrawn) are sent
@@ -295,7 +295,7 @@ impl DripStream {
         Ok(())
     }
 
-    /// Sender (or operator) pauses the stream.
+    /// Sender or delegated operator pauses the stream.
     pub fn pause(env: Env, caller: Address) -> Result<(), Error> {
         state::with_guard(&env, |env| Self::_pause(env, &caller))
     }
@@ -329,7 +329,7 @@ impl DripStream {
         Ok(())
     }
 
-    /// Sender (or operator) resumes a paused stream.
+    /// Sender or delegated operator resumes a paused stream.
     pub fn resume(env: Env, caller: Address) -> Result<(), Error> {
         state::with_guard(&env, |env| Self::_resume(env, &caller))
     }
@@ -384,7 +384,7 @@ impl DripStream {
         Ok(())
     }
 
-    /// Sender (or operator) deposits additional tokens into the stream.
+    /// Sender or delegated operator deposits additional tokens into the stream.
     ///
     /// Auth is checked immediately after the minimal state load needed to
     /// know `sender` -- before `ttl::bump` (a storage write) or the
@@ -437,7 +437,7 @@ impl DripStream {
         Ok(())
     }
 
-    /// Sender (or operator) extends the stream duration by `extra_time_seconds`.
+    /// Sender or delegated operator extends the stream duration by `extra_time_seconds`.
     ///
     /// Transfers the exact required deposit (rate_per_second × extra_time_seconds)
     /// from the caller into the contract and updates `end_time`.
@@ -507,7 +507,7 @@ impl DripStream {
         Ok(())
     }
 
-    /// Sender (or operator) tops up and extends the stream in a single call.
+    /// Sender or delegated operator tops up and extends the stream in a single call.
     ///
     /// Combines [`top_up`](Self::top_up) and [`extend_duration`](Self::extend_duration)
     /// into one authorized transaction, reducing round-trips and the risk of a
@@ -581,7 +581,7 @@ impl DripStream {
         Ok(())
     }
 
-    /// Sender reclaims unstreamed tokens (only if clawback was enabled).
+    /// Sender or delegated operator reclaims unstreamed tokens (only if clawback was enabled).
     ///
     /// A paused stream must be resumed before clawback is allowed; otherwise the
     /// sender could freeze accrual and immediately drain the remaining principal
