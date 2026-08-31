@@ -303,7 +303,8 @@ impl DripGovernor {
         caller: Address,
         new_authority: Address,
     ) -> Result<(), Error> {
-        if is_zero_address(&env, &new_authority)
+        if new_authority == caller
+            || is_zero_address(&env, &new_authority)
             || role::has_role(&env, Role::Admin, &new_authority)
         {
             return Err(Error::InvalidParam);
