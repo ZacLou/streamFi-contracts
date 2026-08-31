@@ -14,7 +14,7 @@ use soroban_sdk::{contract, contractimpl, panic_with_error, token, Address, Env}
 use drip_common::is_zero_address;
 
 pub use errors::Error;
-use storage::{DataKey, StreamInfo, FLAG_CANCELLED, FLAG_CLAWBACK_ENABLED, FLAG_PAUSED};
+use storage::{DataKey, StreamInfo, FLAG_CLAWBACK_ENABLED, FLAG_PAUSED};
 
 #[contract]
 pub struct DripStream;
@@ -62,7 +62,7 @@ impl DripStream {
         start_time: u64,
         end_time: u64,
         clawback_enabled: bool,
-        force_cancel_pause_threshold_seconds: u64,
+        force_cancel_pause_secs: u64,
     ) {
         if env.storage().instance().has(&DataKey::Config) {
             panic_with_error!(&env, Error::AlreadyInitialized);
@@ -80,7 +80,7 @@ impl DripStream {
 
         // A zero threshold would make `force_cancel` callable the instant a
         // stream is paused, defeating its purpose as a bounded grace period.
-        if force_cancel_pause_threshold_seconds == 0 {
+        if force_cancel_pause_secs == 0 {
             panic_with_error!(&env, Error::InvalidAmount);
         }
 
@@ -132,7 +132,7 @@ impl DripStream {
         s.set(&DataKey::StorageVersion, &storage::CURRENT_STORAGE_VERSION);
         s.set(
             &DataKey::ForceCancelPauseThresholdSecs,
-            &force_cancel_pause_threshold_seconds,
+            &force_cancel_pause_secs,
         );
 
         // Write the initial state before emitting the creation event so the
@@ -227,7 +227,9 @@ impl DripStream {
         // contract with less than `to_send`; the withdrawal is reverted instead.
         tk.transfer(&contract_addr, &info.recipient, &to_send);
 
-        let remaining = balance.checked_sub(to_send).ok_or(Error::ArithmeticOverflow)?;
+        let remaining = balance
+            .checked_sub(to_send)
+            .ok_or(Error::ArithmeticOverflow)?;
         events::withdrawn(env, &info.recipient, to_send, new_withdrawn, remaining);
         Ok(to_send)
     }

@@ -11,7 +11,10 @@ use soroban_sdk::{
     token, Address, Env, IntoVal, TryIntoVal,
 };
 
-use crate::{storage::{DataKey, StreamInfo, FLAG_CANCELLED, FLAG_CLAWBACK_ENABLED, FLAG_PAUSED}, DripStream, DripStreamClient, Error};
+use crate::{
+    storage::{DataKey, StreamInfo, FLAG_CANCELLED, FLAG_CLAWBACK_ENABLED, FLAG_PAUSED},
+    DripStream, DripStreamClient, Error,
+};
 
 /// Deploy a mock token and a DripStream, returning both clients and
 /// the sender/recipient addresses.
@@ -335,6 +338,7 @@ fn clawback_open_ended_refunds_unstreamed_remainder() {
         &now,
         &0, // open-ended — no end_time
         &true,
+        &2_592_000_u64,
     );
 
     // Advance 30 s → 3_000 stroops have accrued to the recipient.
@@ -405,6 +409,7 @@ fn clawback_open_ended_does_not_touch_accrued_funds() {
         &now,
         &0, // open-ended
         &true,
+        &2_592_000_u64,
     );
 
     // Advance 50 s → 5_000 stroops accrued.
@@ -551,8 +556,16 @@ fn re_initializing_an_active_stream_panics() {
     // must be rejected — otherwise they could redirect the escrowed balance
     // to themselves via cancel()/clawback().
     let attacker = Address::generate(&s.env);
-    s.client
-        .initialize(&attacker, &attacker, &s.token.address, &1, &0, &0, &false, &2_592_000_u64);
+    s.client.initialize(
+        &attacker,
+        &attacker,
+        &s.token.address,
+        &1,
+        &0,
+        &0,
+        &false,
+        &2_592_000_u64,
+    );
 }
 
 // ── Time-range boundary guard (issue #81) ────────────────────────────────────
@@ -970,7 +983,16 @@ fn extend_duration_rejected_for_open_ended() {
     let stream_id = env.register_contract(None, DripStream);
     let client = DripStreamClient::new(&env, &stream_id);
 
-    client.initialize(&sender, &recipient, &token_addr, &100, &now, &0, &false, &2_592_000_u64);
+    client.initialize(
+        &sender,
+        &recipient,
+        &token_addr,
+        &100,
+        &now,
+        &0,
+        &false,
+        &2_592_000_u64,
+    );
 
     let result = client.try_extend_duration(&sender, &100);
     assert_eq!(result, Err(Ok(Error::InvalidTimeRange)));
@@ -1280,7 +1302,16 @@ fn top_up_and_extend_rejected_for_open_ended_stream() {
     let stream_id = env.register_contract(None, DripStream);
     let client = DripStreamClient::new(&env, &stream_id);
 
-    client.initialize(&sender, &recipient, &token_addr, &100, &now, &0, &false, &2_592_000_u64);
+    client.initialize(
+        &sender,
+        &recipient,
+        &token_addr,
+        &100,
+        &now,
+        &0,
+        &false,
+        &2_592_000_u64,
+    );
 
     let result = client.try_top_up_and_extend(&sender, &10_000, &100);
     assert_eq!(result, Err(Ok(Error::InvalidTimeRange)));
@@ -1899,14 +1930,23 @@ fn flag_getters_map_to_correct_bit() {
 
     let cases: [(u32, fn(&StreamInfo) -> bool, &str); 3] = [
         (FLAG_PAUSED, StreamInfo::is_paused, "paused"),
-        (FLAG_CLAWBACK_ENABLED, StreamInfo::is_clawback_enabled, "clawback_enabled"),
+        (
+            FLAG_CLAWBACK_ENABLED,
+            StreamInfo::is_clawback_enabled,
+            "clawback_enabled",
+        ),
         (FLAG_CANCELLED, StreamInfo::is_cancelled, "cancelled"),
     ];
 
     for (flag, getter, name) in cases {
         let mut info = base.clone();
         info.flags = flag;
-        assert!(getter(&info), "is_{} must be true when flags={}", name, flag);
+        assert!(
+            getter(&info),
+            "is_{} must be true when flags={}",
+            name,
+            flag
+        );
         info.flags = 0;
         assert!(!getter(&info), "is_{} must be false when flags=0", name);
     }

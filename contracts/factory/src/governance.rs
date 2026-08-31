@@ -98,7 +98,7 @@ mod tests {
             max_duration_seconds: 30 * DAY,
             max_rate_per_second: 1_000_000,
             factory_address: Address::generate(env),
-            force_cancel_pause_threshold_seconds: 30 * DAY,
+            force_cancel_pause_secs: 30 * DAY,
         }
     }
 

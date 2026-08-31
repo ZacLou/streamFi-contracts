@@ -117,24 +117,6 @@ pub struct Aggregate {
     pub active_streams: u64,
 }
 
-/// Storage keys for the DripFactory contract.
-///
-/// The `#[contracttype]` macro serializes each variant as an XDR tagged union:
-/// the discriminant (variant index) followed by the encoded inner type. This
-/// means `DataKey::StreamAddr(42)` and `DataKey::StreamAddr(43)` are distinct
-/// keys in Soroban's storage trie, each serialized as:
-///   [discriminant: u32][stream_id: u64]
-///
-/// Similarly, `DataKey::BySender(address)` serializes as:
-///   [discriminant: u32][address: XDR-encoded Address]
-///
-/// Storage is split across two tiers:
-/// - **Instance storage**: Small, contract-scoped data that scales with the
-///   number of operations (e.g., counters, config). Bounded by instance size limits.
-/// - **Persistent storage**: Per-entity data that grows without bound (e.g.,
-///   per-stream addresses, per-user indices). Avoids hitting instance size limits
-///   as the protocol scales. Each entry has its own TTL and can be extended independently.
-
 /// Current storage layout version for this contract.
 ///
 /// Written once at `initialize()` and checked by `upgrade()` before
@@ -144,6 +126,24 @@ pub struct Aggregate {
 /// paged `BySender*`/`ByRecipient*` indices, `LastBumpedId`, etc.).
 pub const CURRENT_STORAGE_VERSION: u32 = 1;
 
+/// Storage keys for the DripFactory contract.
+///
+/// The `#[contracttype]` macro serializes each variant as an XDR tagged union:
+/// the discriminant (variant index) followed by the encoded inner type. This
+/// means `DataKey::StreamAddr(42)` and `DataKey::StreamAddr(43)` are distinct
+/// keys in Soroban's storage trie, each serialized as
+/// `[discriminant: u32][stream_id: u64]`.
+///
+/// Similarly, `DataKey::BySender(address)` serializes as
+/// `[discriminant: u32][address: XDR-encoded Address]`.
+///
+/// Storage is split across two tiers:
+///
+/// - **Instance storage**: Small, contract-scoped data that scales with the
+///   number of operations (e.g., counters, config). Bounded by instance size limits.
+/// - **Persistent storage**: Per-entity data that grows without bound (e.g.,
+///   per-stream addresses, per-user indices). Avoids hitting instance size limits
+///   as the protocol scales. Each entry has its own TTL and can be extended independently.
 #[contracttype]
 pub enum DataKey {
     /// **Instance storage.** Monotonically incrementing stream counter.

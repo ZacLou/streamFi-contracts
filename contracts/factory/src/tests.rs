@@ -30,7 +30,7 @@ impl Setup {
         env.mock_all_auths();
 
         let governor = Address::generate(&env);
-        let wasm_hash = BytesN::from_array(&env, &[0u8; 32]);
+        let wasm_hash = BytesN::from_array(&env, &[1u8; 32]);
 
         let contract_id = env.register_contract(None, DripFactory);
         let client = DripFactoryClient::new(&env, &contract_id);
@@ -469,7 +469,7 @@ fn index_ttl_env() -> (Env, DripFactoryClient<'static>, Address) {
     });
 
     let governor = Address::generate(&env);
-    let wasm_hash = BytesN::from_array(&env, &[0u8; 32]);
+    let wasm_hash = BytesN::from_array(&env, &[1u8; 32]);
     let contract_id = env.register_contract(None, DripFactory);
     let client = DripFactoryClient::new(&env, &contract_id);
     client.initialize(&wasm_hash, &governor);

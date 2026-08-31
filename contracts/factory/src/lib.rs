@@ -21,7 +21,9 @@ use drip_common::is_zero_address;
 
 pub use errors::Error;
 use storage::DataKey;
-pub use storage::{Aggregate, BatchStreamRequest, FactoryStatus, FeeEstimate, StreamOperation, StreamPage};
+pub use storage::{
+    Aggregate, BatchStreamRequest, FactoryStatus, FeeEstimate, StreamOperation, StreamPage,
+};
 
 /// Maximum number of streams accepted by a single `create_batch_streams`
 /// (and `cancel_batch_streams`/`stream_addresses`) call. The batch
@@ -75,7 +77,10 @@ impl DripFactory {
         env.storage().instance().set(&DataKey::StreamCount, &0_u64);
         env.storage().instance().set(
             &DataKey::Aggregate,
-            &Aggregate { total_supply: 0, active_streams: 0 },
+            &Aggregate {
+                total_supply: 0,
+                active_streams: 0,
+            },
         );
         env.storage().instance().set(
             &DataKey::FactoryStorageVersion,
@@ -274,7 +279,7 @@ impl DripFactory {
         };
 
         // ── Deploy DripStream ────────────────────────────────────────────
-        // `config.force_cancel_pause_threshold_seconds` was already read
+        // `config.force_cancel_pause_secs` was already read
         // above (governor cross-contract call for bounds enforcement), so
         // passing it into `initialize` here is free — no extra cross-contract
         // call. The deployed stream stores it and reads it locally in
@@ -289,7 +294,7 @@ impl DripFactory {
             start_time.into_val(&env),
             end_time.into_val(&env),
             clawback.into_val(&env),
-            config.force_cancel_pause_threshold_seconds.into_val(&env),
+            config.force_cancel_pause_secs.into_val(&env),
         ];
 
         let stream_addr = deploy::deploy_stream(&env, &wasm_hash, stream_id, init_args);
@@ -326,11 +331,14 @@ impl DripFactory {
             .set(&DataKey::StreamCount, &(stream_count + 1));
 
         // Increment aggregate counters after the new stream is fully persisted.
-        let aggregate: Aggregate = env
-            .storage()
-            .instance()
-            .get(&DataKey::Aggregate)
-            .unwrap_or(Aggregate { total_supply: 0, active_streams: 0 });
+        let mut aggregate: Aggregate =
+            env.storage()
+                .instance()
+                .get(&DataKey::Aggregate)
+                .unwrap_or(Aggregate {
+                    total_supply: 0,
+                    active_streams: 0,
+                });
         aggregate.total_supply = aggregate
             .total_supply
             .checked_add(1)
@@ -339,7 +347,9 @@ impl DripFactory {
             .active_streams
             .checked_add(1)
             .expect("active_streams overflow");
-        env.storage().instance().set(&DataKey::Aggregate, &aggregate);
+        env.storage()
+            .instance()
+            .set(&DataKey::Aggregate, &aggregate);
 
         // Persistent storage entry 2 — BySender (paged):
         //   Key:   DataKey::BySenderPage(sender, page)
@@ -505,9 +515,14 @@ impl DripFactory {
                 .storage()
                 .instance()
                 .get(&DataKey::Aggregate)
-                .unwrap_or(Aggregate { total_supply: 0, active_streams: 0 });
+                .unwrap_or(Aggregate {
+                    total_supply: 0,
+                    active_streams: 0,
+                });
             aggregate.active_streams = aggregate.active_streams.saturating_sub(1);
-            env.storage().instance().set(&DataKey::Aggregate, &aggregate);
+            env.storage()
+                .instance()
+                .set(&DataKey::Aggregate, &aggregate);
         }
 
         Ok(())
@@ -532,14 +547,16 @@ impl DripFactory {
         Ok(out)
     }
 
-
     /// Returns the factory's aggregate counters: total streams ever created
     /// and the number still active.
     pub fn aggregate(env: Env) -> Aggregate {
         env.storage()
             .instance()
             .get(&DataKey::Aggregate)
-            .unwrap_or(Aggregate { total_supply: 0, active_streams: 0 })
+            .unwrap_or(Aggregate {
+                total_supply: 0,
+                active_streams: 0,
+            })
     }
 
     /// Permissionless hook for a stream contract (or anyone acting on its
@@ -553,13 +570,18 @@ impl DripFactory {
     /// each decrement corresponds to a stream that the factory counted at
     /// creation time.
     pub fn record_cancel(env: Env) {
-        let mut aggregate: Aggregate = env
-            .storage()
-            .instance()
-            .get(&DataKey::Aggregate)
-            .unwrap_or(Aggregate { total_supply: 0, active_streams: 0 });
+        let mut aggregate: Aggregate =
+            env.storage()
+                .instance()
+                .get(&DataKey::Aggregate)
+                .unwrap_or(Aggregate {
+                    total_supply: 0,
+                    active_streams: 0,
+                });
         aggregate.active_streams = aggregate.active_streams.saturating_sub(1);
-        env.storage().instance().set(&DataKey::Aggregate, &aggregate);
+        env.storage()
+            .instance()
+            .set(&DataKey::Aggregate, &aggregate);
     }
     /// Paginated list of stream IDs created by `sender`, paired with the
     /// sender's total stream count.
