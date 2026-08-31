@@ -1750,6 +1750,20 @@ fn withdraw_remaining_is_zero_when_draining_full_balance() {
     assert_eq!(remaining, contract_after);
 }
 
+// ── Issue #415: `remaining` must be a real post-transfer balance and pass ────
+// the same non-negative check as the other `withdrawn` event fields.
+
+#[test]
+#[should_panic(expected = "Error(Contract, #15)")]
+fn withdrawn_event_rejects_negative_remaining() {
+    // The event helper validates every amount field it publishes — including
+    // `remaining` — so a corrupted / negative balance can never be emitted to
+    // indexers, even if a hostile token ever reported one.
+    let env = Env::default();
+    let recipient = Address::generate(&env);
+    crate::events::withdrawn(&env, &recipient, 1_000, 1_000, -1);
+}
+
 // ── Issue #381: top_up must reject an ended bounded stream ───────────────────
 //
 // `_extend_duration` / `_top_up_and_extend` intentionally do NOT get this guard
