@@ -724,16 +724,16 @@ impl DripFactory {
     ///
     /// This is distinct from `upgrade_stream_wasm`, which only updates the
     /// WASM hash used for *future* `create_stream` deployments. `upgrade`
-    /// replaces the factory's own implementation.
+    /// replaces the factory's own implementation. Named `upgrade_self` (not `upgrade`) to avoid a WASM export-name clash with `DripGovernor::upgrade`, since a factory build links the governor crate.
     ///
     /// `expected_storage_version` must equal the *currently stored*
-    /// `DataKey::FactoryStorageVersion` (readable via `storage_version()`).
-    /// Upgrade tooling should read `storage_version()` and the new WASM's
+    /// `DataKey::FactoryStorageVersion` (readable via `factory_storage_version()`).
+    /// Upgrade tooling should read `factory_storage_version()` and the new WASM's
     /// own `storage::CURRENT_STORAGE_VERSION` before submitting this call,
     /// and pass the value it confirmed matches — this guards against a
     /// storage-layout change being deployed onto existing state without an
     /// explicit migration step, mirroring `DripStream::storage_version`.
-    pub fn upgrade(
+    pub fn upgrade_self(
         env: Env,
         new_wasm_hash: BytesN<32>,
         expected_storage_version: u32,
@@ -770,11 +770,11 @@ impl DripFactory {
 
     /// Storage layout version this instance was initialized with.
     ///
-    /// Upgrade tooling should read this before calling `upgrade` and confirm
+    /// Upgrade tooling should read this before calling `upgrade_self` and confirm
     /// it matches both the value passed as `expected_storage_version` and
     /// the new WASM's own expected version. Mirrors
     /// `DripStream::storage_version`.
-    pub fn storage_version(env: Env) -> u32 {
+    pub fn factory_storage_version(env: Env) -> u32 {
         env.storage()
             .instance()
             .get(&DataKey::FactoryStorageVersion)
