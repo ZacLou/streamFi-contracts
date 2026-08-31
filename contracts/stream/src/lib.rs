@@ -277,7 +277,7 @@ impl DripStream {
             .ok_or(Error::ArithmeticOverflow)?;
 
         let mut cancelled_info = info.clone();
-        cancelled_info.flags |= FLAG_CANCELLED;
+        cancelled_info.mark_cancelled();
         cancelled_info.withdrawn = total_withdrawn;
         state::save(env, &cancelled_info);
 
@@ -699,7 +699,7 @@ impl DripStream {
             .ok_or(Error::ArithmeticOverflow)?;
 
         let mut cancelled_info = info.clone();
-        cancelled_info.flags |= FLAG_CANCELLED;
+        cancelled_info.mark_cancelled();
         cancelled_info.withdrawn = total_withdrawn;
         state::save(env, &cancelled_info);
 
