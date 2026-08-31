@@ -29,11 +29,6 @@ pub fn has_role(env: &Env, role: Role, account: &Address) -> bool {
     rbac::has_role(env, &role_key(role, account))
 }
 
-/// Number of accounts currently holding `Role::Admin` (zero pre-initialization).
-pub fn admin_count(env: &Env) -> u32 {
-    rbac::admin_count(env, &DataKey::AdminCount)
-}
-
 /// Grants `role` to `account`.
 ///
 /// Idempotent: re-granting a role the account already holds is a no-op, so the
@@ -74,13 +69,8 @@ pub fn revoke(env: &Env, role: Role, account: &Address) -> Result<bool, Error> {
 /// Requires that `caller` both authorized the transaction and holds `role`,
 /// then bumps instance TTL. Every role-gated write funnels through here.
 pub fn require_role(env: &Env, caller: &Address, role: Role) -> Result<(), Error> {
-    rbac::require_role(
-        env,
-        caller,
-        &role_key(role, caller),
-        Some(ttl::bump),
-    )
-    .map_err(|_| Error::NotAuthorized)
+    rbac::require_role(env, caller, &role_key(role, caller), Some(ttl::bump))
+        .map_err(|_| Error::NotAuthorized)
 }
 
 /// Returns every account currently holding `role`.

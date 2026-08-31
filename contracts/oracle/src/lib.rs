@@ -59,6 +59,7 @@ pub struct RoleKey {
 }
 
 #[contracttype]
+#[derive(Clone)]
 pub enum DataKey {
     Admin,
     Config,

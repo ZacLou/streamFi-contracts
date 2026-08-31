@@ -11,7 +11,7 @@ mod ttl;
 
 use soroban_sdk::{contract, contractimpl, panic_with_error, token, Address, Env};
 
-use drip_common::is_zero_stellar_account;
+use drip_common::is_zero_address;
 
 pub use errors::Error;
 use storage::{DataKey, StreamInfo, FLAG_CANCELLED, FLAG_CLAWBACK_ENABLED, FLAG_PAUSED};
@@ -83,9 +83,9 @@ impl DripStream {
         // these a direct `initialize` call could:
         //   * escrow funds to an unspendable zero-address recipient, or
         //   * create a self-stream (recipient == sender).
-        // `is_zero_stellar_account` is the exact same helper the factory uses
+        // `is_zero_address` is the exact same helper the factory uses
         // (contracts/common/src/lib.rs), so both paths reject identical inputs.
-        if is_zero_stellar_account(&env, &recipient) || recipient == sender {
+        if is_zero_address(&env, &recipient) || recipient == sender {
             panic_with_error!(&env, Error::InvalidRecipient);
         }
 
