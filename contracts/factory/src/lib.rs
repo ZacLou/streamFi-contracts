@@ -58,6 +58,12 @@ impl DripFactory {
         if env.storage().instance().has(&DataKey::StreamCount) {
             panic_with_error!(&env, Error::AlreadyInitialized);
         }
+        if is_zero_wasm_hash(&env, &stream_wasm_hash) {
+            panic_with_error!(&env, Error::InvalidWasmHash);
+        }
+        if is_zero_address(&env, &governor) {
+            panic_with_error!(&env, Error::InvalidGovernor);
+        }
         ttl::bump_instance(&env);
 
         env.storage()
