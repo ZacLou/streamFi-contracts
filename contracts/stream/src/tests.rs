@@ -11,7 +11,7 @@ use soroban_sdk::{
     token, Address, Env, IntoVal, TryIntoVal,
 };
 
-use crate::{storage::DataKey, DripStream, DripStreamClient, Error};
+use crate::{storage::{DataKey, StreamInfo, FLAG_CANCELLED, FLAG_CLAWBACK_ENABLED, FLAG_PAUSED}, DripStream, DripStreamClient, Error};
 
 /// Deploy a mock token and a DripStream, returning both clients and
 /// the sender/recipient addresses.
@@ -1874,4 +1874,40 @@ fn save_migrates_legacy_keys_to_config_once() {
         assert_eq!(info.sender, sender);
         assert_eq!(info.recipient, recipient);
     });
+}
+
+#[test]
+fn flag_getters_map_to_correct_bit() {
+    // Regression test for the merged FLAG_ClAWBACK_ENABLED typo: a table-driven
+    // check guarantees each getter masks exactly the documented bit.
+    let env = Env::default();
+    let sender = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let token = Address::generate(&env);
+    let base = StreamInfo {
+        sender: sender.clone(),
+        recipient: recipient.clone(),
+        token: token.clone(),
+        rate_per_second: 1,
+        start_time: 0,
+        end_time: 1,
+        withdrawn: 0,
+        paused_at: 0,
+        flags: 0,
+        event_sequence: 0,
+    };
+
+    let cases: [(u32, fn(&StreamInfo) -> bool, &str); 3] = [
+        (FLAG_PAUSED, StreamInfo::is_paused, "paused"),
+        (FLAG_CLAWBACK_ENABLED, StreamInfo::is_clawback_enabled, "clawback_enabled"),
+        (FLAG_CANCELLED, StreamInfo::is_cancelled, "cancelled"),
+    ];
+
+    for (flag, getter, name) in cases {
+        let mut info = base.clone();
+        info.flags = flag;
+        assert!(getter(&info), "is_{} must be true when flags={}", name, flag);
+        info.flags = 0;
+        assert!(!getter(&info), "is_{} must be false when flags=0", name);
+    }
 }
