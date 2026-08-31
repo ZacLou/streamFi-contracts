@@ -1764,6 +1764,35 @@ fn withdrawn_event_rejects_negative_remaining() {
     crate::events::withdrawn(&env, &recipient, 1_000, 1_000, -1);
 }
 
+#[test]
+fn withdraw_remaining_is_post_transfer_balance_when_underfunded() {
+    // Issue #415 scenario: an under-funded open-ended stream. `remaining` in
+    // the `withdrawn` event must be the REAL post-transfer balance (0 here) —
+    // never a stale projection, and never negative.
+    let env = Env::default();
+    let (client, tok, _sender, _recipient) = direct_stream(&env, 100, 400, BASE_TIME, 0);
+    advance(&env, 1_000); // accrued = 100_000 ≫ funded 400 → only 400 payable
+    client.withdraw(&100_000);
+    let contract_after = tok.balance(&client.address);
+    assert_eq!(contract_after, 0);
+
+    let all_events = env.events().all();
+    let stream_events: std::vec::Vec<_> = all_events
+        .iter()
+        .filter(|(contract, _, _)| contract == &client.address)
+        .collect();
+    // The last stream event is the `withdrawn` event:
+    // (amount, total_withdrawn, remaining)
+    let data: (i128, i128, i128) = stream_events[stream_events.len() - 1]
+        .2
+        .try_into_val(&env)
+        .unwrap();
+    let (amount, _total, remaining) = data;
+    assert_eq!(amount, 400);
+    assert_eq!(remaining, 0);
+    assert_eq!(remaining, contract_after);
+}
+
 // ── Issue #381: top_up must reject an ended bounded stream ───────────────────
 //
 // `_extend_duration` / `_top_up_and_extend` intentionally do NOT get this guard
