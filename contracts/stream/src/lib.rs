@@ -224,10 +224,10 @@ impl DripStream {
         // Perform the transfer, then derive `remaining` from the single balance
         // captured above. `checked_sub` (rather than a bare `-`) guarantees no
         // underflow panic even if a fee-on-transfer / rebasing token leaves the
-        // contract with less than `to_send`; the worst case is a conservative 0.
+        // contract with less than `to_send`; the withdrawal is reverted instead.
         tk.transfer(&contract_addr, &info.recipient, &to_send);
 
-        let remaining = balance.checked_sub(to_send).unwrap_or(0);
+        let remaining = balance.checked_sub(to_send).ok_or(Error::ArithmeticOverflow)?;
         events::withdrawn(env, &info.recipient, to_send, new_withdrawn, remaining);
         Ok(to_send)
     }
