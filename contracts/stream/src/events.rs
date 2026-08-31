@@ -54,6 +54,14 @@ pub fn created(
     );
 }
 
+/// Publish a `withdrawn` event for a completed withdrawal.
+///
+/// `amount` is what the recipient received this call, `total_withdrawn` is the
+/// cumulative amount withdrawn across the stream's life, and `remaining` is the
+/// contract's REAL token balance after the transfer (what an indexer would
+/// observe when reading the escrow). All three are amount fields, so each must
+/// be non-negative before the event is emitted; a negative value indicates a
+/// corrupted or unexpected state and is rejected rather than published.
 pub fn withdrawn(
     env: &Env,
     recipient: &Address,

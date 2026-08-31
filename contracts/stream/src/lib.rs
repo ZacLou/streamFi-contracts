@@ -164,6 +164,11 @@ impl DripStream {
     }
 
     /// Recipient withdraws `amount` tokens.
+    ///
+    /// The payout is clamped to the recipient's accrued entitlement and to the
+    /// tokens the contract actually holds. The `withdrawn` event reports the
+    /// real post-transfer balance as `remaining`, so indexers can trust it
+    /// even for fee-on-transfer / rebasing tokens.
     pub fn withdraw(env: Env, amount: i128) -> Result<i128, Error> {
         state::with_guard(&env, |env| Self::_withdraw(env, amount))
     }
