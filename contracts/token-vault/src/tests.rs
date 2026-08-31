@@ -102,10 +102,7 @@ fn operator_can_deposit() {
     s.client.set_operator(&s.owner, &op);
 
     s.client.deposit(&op, &500);
-    let balance = s
-        .env
-        .as_contract(&s.client.address, || storage::get_balance(&s.env));
-    assert_eq!(balance, Some(500));
+    assert_eq!(s.token.balance(&s.client.address), 500);
 }
 
 #[test]
@@ -138,11 +135,11 @@ fn withdraw_succeeds_with_real_owner_auth() {
 fn direct_transfers_count_toward_deposit_limit() {
     let s = Setup::new(1_000_000);
 
-    s.client.deposit(&s.user, &999_900);
+    s.client.deposit(&s.owner, &999_900);
     s.token.transfer(&s.user, &s.client.address, &100);
 
     assert_eq!(
-        s.client.try_deposit(&s.user, &1),
+        s.client.try_deposit(&s.owner, &1),
         Err(Ok(Error::LimitExceeded))
     );
 }
@@ -151,7 +148,7 @@ fn direct_transfers_count_toward_deposit_limit() {
 fn direct_transfers_are_withdrawable_by_owner() {
     let s = Setup::new(1_000_000);
 
-    s.client.deposit(&s.user, &500);
+    s.client.deposit(&s.owner, &500);
     s.token.transfer(&s.user, &s.client.address, &200);
 
     let recipient = Address::generate(&s.env);

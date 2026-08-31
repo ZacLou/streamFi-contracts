@@ -10,8 +10,10 @@ use drip_common::{is_zero_address, TTL_EXTEND_TO, TTL_THRESHOLD};
 use errors::Error;
 use soroban_sdk::{contract, contractimpl, token, Address, Env};
 use storage::{
-    get_max_limit, get_operator, get_owner, get_token, is_paused, remove_operator, set_max_limit,
-    set_operator, set_owner, set_paused, set_token,
+    get_max_limit, get_operator, get_owner, get_pending_owner, get_pending_owner_proposer,
+    get_token, is_paused, remove_operator, remove_pending_owner, remove_pending_owner_proposer,
+    set_max_limit, set_operator, set_owner, set_paused, set_pending_owner,
+    set_pending_owner_proposer, set_token,
 };
 
 #[contract]
