@@ -10,11 +10,14 @@ use crate::storage::StreamInfo;
 /// between `start_time` and an "effective now" that is clamped so pausing and
 /// stream completion never inflate the result:
 /// - If `now` is before `start_time`, nothing has streamed yet (`0`).
+/// - If the stream is currently paused, `effective now` is the later of
+///   `paused_at` (the timestamp the pause began — time spent paused never
+///   counts as elapsed) and, for a bounded stream, `end_time`. Pausing is
+///   checked **before** the `end_time` clamp so a stream the sender left
+///   paused cannot silently accrue the full contracted amount once ledger
+///   time passes the original `end_time`.
 /// - If `end_time` is set and has passed, `effective now` is `end_time` —
 ///   streaming stops accruing once the stream is over.
-/// - If the stream is currently paused, `effective now` is `paused_at`, the
-///   timestamp the pause began — time spent paused never counts as elapsed,
-///   so accrual freezes until `resume()` shifts `start_time` forward.
 /// - Otherwise `effective now` is the current ledger time.
 pub fn streamed_amount(env: &Env, info: &StreamInfo) -> Result<i128, Error> {
     let now = env.ledger().timestamp();
@@ -24,11 +27,18 @@ pub fn streamed_amount(env: &Env, info: &StreamInfo) -> Result<i128, Error> {
         return Ok(0);
     }
 
-    // Clamp to end_time if set
-    let effective_now = if info.end_time > 0 && now > info.end_time {
+    // A paused stream freezes accrual at the pause, no matter how much
+    // wall-clock time elapses afterwards — even past end_time. This is
+    // guarded before the end_time clamp so a never-resumed stream cannot
+    // inflate to the full contracted amount once its end_time passes.
+    let effective_now = if info.is_paused() {
+        if info.end_time > 0 && info.paused_at > info.end_time {
+            info.end_time
+        } else {
+            info.paused_at
+        }
+    } else if info.end_time > 0 && now > info.end_time {
         info.end_time
-    } else if info.is_paused() {
-        info.paused_at
     } else {
         now
     };

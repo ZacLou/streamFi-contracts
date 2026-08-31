@@ -282,9 +282,9 @@ fn legacy_sender_index_migration_is_incremental() {
     });
 
     let page = s.client.streams_by_sender(&sender, &95, &10);
-    assert_eq!(page.len(), 10);
-    assert_eq!(page.get(0).unwrap(), 95);
-    assert_eq!(page.get(9).unwrap(), 104);
+    assert_eq!(page.ids.len(), 10);
+    assert_eq!(page.ids.get(0).unwrap(), 95);
+    assert_eq!(page.ids.get(9).unwrap(), 104);
 
     assert_eq!(s.client.migrate_sender_index(&sender, &10), 250);
     s.env.as_contract(&s.client.address, || {
@@ -317,10 +317,10 @@ fn append_during_partial_sender_migration_preserves_order() {
     assert_eq!(s.client.stream_count_by_sender(&sender), 151);
 
     let tail = s.client.streams_by_sender(&sender, &145, &10);
-    assert_eq!(tail.len(), 6);
-    assert_eq!(tail.get(0).unwrap(), 145);
-    assert_eq!(tail.get(4).unwrap(), 149);
-    assert_eq!(tail.get(5).unwrap(), 999);
+    assert_eq!(tail.ids.len(), 6);
+    assert_eq!(tail.ids.get(0).unwrap(), 145);
+    assert_eq!(tail.ids.get(4).unwrap(), 149);
+    assert_eq!(tail.ids.get(5).unwrap(), 999);
 
     assert_eq!(s.client.migrate_sender_index(&sender, &10), 151);
     let tail_after = s.client.streams_by_sender(&sender, &145, &10);
