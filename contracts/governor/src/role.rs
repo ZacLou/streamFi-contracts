@@ -30,6 +30,8 @@ pub fn has_role(env: &Env, role: Role, account: &Address) -> bool {
 }
 
 /// Number of accounts currently holding `Role::Admin` (zero pre-initialization).
+///
+/// Part of the governor RBAC surface; no contract entry point calls it yet.
 #[allow(dead_code)]
 pub fn admin_count(env: &Env) -> u32 {
     rbac::admin_count(env, &DataKey::AdminCount)

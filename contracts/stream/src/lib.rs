@@ -83,7 +83,7 @@ impl DripStream {
         // these a direct `initialize` call could:
         //   * escrow funds to an unspendable zero-address recipient, or
         //   * create a self-stream (recipient == sender).
-        // `is_zero_stellar_account` is the exact same helper the factory uses
+        // `is_zero_address` is the exact same helper the factory uses
         // (contracts/common/src/lib.rs), so both paths reject identical inputs.
         if is_zero_address(&env, &recipient) || recipient == sender {
             panic_with_error!(&env, Error::InvalidRecipient);
