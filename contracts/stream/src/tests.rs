@@ -982,6 +982,41 @@ fn force_cancel_commits_state_and_drains_balance() {
     assert_eq!(s.client.info().withdrawn, 100_000);
 }
 
+/// `force_cancel()` must succeed at exactly `pause_start + threshold`:
+/// `_force_cancel` rejects with `PauseThresholdNotMet` only when
+/// `now - paused_at < PAUSE_THRESHOLD_SECS`, so the boundary value itself is
+/// accepted rather than one second short of it.
+#[test]
+fn force_cancel_succeeds_at_exact_pause_threshold() {
+    // 60-day stream keeps end_time beyond the 30-day pause threshold so the
+    // pause branch is the operative one.
+    let s = Setup::new(100, 5_184_000, false);
+    s.client.pause(&s.sender);
+    s.advance_secs(2_592_000); // ledger time == pause_start + threshold
+
+    s.client.force_cancel();
+
+    assert!(s.client.info().is_cancelled());
+    assert_eq!(s.token.balance(&s.client.address), 0);
+}
+
+/// `force_cancel()` must be rejected at `pause_start + threshold - 1`: one
+/// second before the threshold the pause has not elapsed long enough, and the
+/// stream must remain paused and unsettled.
+#[test]
+fn force_cancel_rejected_one_second_before_pause_threshold() {
+    let s = Setup::new(100, 5_184_000, false);
+    s.client.pause(&s.sender);
+    s.advance_secs(2_591_999); // ledger time == pause_start + threshold - 1
+
+    assert_eq!(
+        s.client.try_force_cancel(),
+        Err(Ok(Error::PauseThresholdNotMet))
+    );
+    assert!(!s.client.info().is_cancelled());
+    assert!(s.client.info().is_paused());
+}
+
 /// Every value-moving entry point must reject an already-cancelled stream.
 /// This is the guard that makes a second settlement impossible regardless of
 /// how the caller reaches it.
