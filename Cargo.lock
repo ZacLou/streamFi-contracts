@@ -406,6 +406,7 @@ dependencies = [
 name = "drip-oracle"
 version = "0.1.0"
 dependencies = [
+ "drip-common",
  "soroban-sdk",
 ]
 

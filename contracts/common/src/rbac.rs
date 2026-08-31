@@ -53,8 +53,7 @@ use soroban_sdk::{Address, Env, IntoVal, TryFromVal, Val, Vec as SorobanVec};
 /// Convenience bound for any type usable as an instance-storage key.
 ///
 /// Every `#[contracttype]` enum/struct satisfies this automatically.
-pub trait StorageKey:
-    IntoVal<Env, Val> + TryFromVal<Env, Val> + Clone {}
+pub trait StorageKey: IntoVal<Env, Val> + TryFromVal<Env, Val> + Clone {}
 
 impl<T: IntoVal<Env, Val> + TryFromVal<Env, Val> + Clone> StorageKey for T {}
 
@@ -171,9 +170,7 @@ where
         if count <= 1 {
             return Err(RbacError::LastAdmin);
         }
-        env.storage()
-            .instance()
-            .set(admin_count_key, &(count - 1));
+        env.storage().instance().set(admin_count_key, &(count - 1));
     }
     env.storage().instance().remove(role_key);
     // Rebuild the members index without this account.

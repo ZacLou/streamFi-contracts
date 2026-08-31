@@ -638,6 +638,7 @@ fn info_returns_correct_initial_state() {
     assert!(!inf.is_cancelled());
     assert!(inf.is_clawback_enabled());
     assert_eq!(inf.withdrawn, 0);
+    assert_eq!(inf.operator, None);
 }
 
 #[test]
@@ -1101,7 +1102,8 @@ fn set_operator_sets_address() {
     let s = Setup::new(100, 3600, false);
     let operator = Address::generate(&s.env);
     s.client.set_operator(&s.sender, &operator);
-    assert_eq!(s.client.operator(), Some(operator));
+    assert_eq!(s.client.operator(), Some(operator.clone()));
+    assert_eq!(s.client.info().operator, Some(operator));
 }
 
 #[test]
@@ -1129,9 +1131,11 @@ fn set_operator_requires_revoke_before_replacement() {
     let op2 = Address::generate(&s.env);
     s.client.set_operator(&s.sender, &op1);
     assert_eq!(s.client.operator(), Some(op1.clone()));
+    assert_eq!(s.client.info().operator, Some(op1.clone()));
     let result = s.client.try_set_operator(&s.sender, &op2);
     assert_eq!(result, Err(Ok(Error::OperatorAlreadySet)));
-    assert_eq!(s.client.operator(), Some(op1));
+    assert_eq!(s.client.operator(), Some(op1.clone()));
+    assert_eq!(s.client.info().operator, Some(op1));
 }
 
 #[test]
@@ -1139,9 +1143,29 @@ fn revoke_operator_removes_address() {
     let s = Setup::new(100, 3600, false);
     let operator = Address::generate(&s.env);
     s.client.set_operator(&s.sender, &operator);
-    assert_eq!(s.client.operator(), Some(operator));
+    assert_eq!(s.client.operator(), Some(operator.clone()));
+    assert_eq!(s.client.info().operator, Some(operator));
     s.client.revoke_operator(&s.sender);
     assert_eq!(s.client.operator(), None);
+    assert_eq!(s.client.info().operator, None);
+}
+
+#[test]
+fn operator_persists_across_mutations() {
+    let s = Setup::new(100, 3600, false);
+    let operator = Address::generate(&s.env);
+    s.client.set_operator(&s.sender, &operator);
+
+    s.advance_secs(100);
+    s.client.withdraw(&5_000);
+    assert_eq!(s.client.info().operator, Some(operator.clone()));
+
+    s.client.pause(&operator);
+    assert_eq!(s.client.info().operator, Some(operator.clone()));
+
+    s.advance_secs(100);
+    s.client.resume(&operator);
+    assert_eq!(s.client.info().operator, Some(operator));
 }
 
 #[test]

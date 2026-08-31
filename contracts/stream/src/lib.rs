@@ -11,7 +11,7 @@ mod ttl;
 
 use soroban_sdk::{contract, contractimpl, panic_with_error, token, Address, Env};
 
-use drip_common::is_zero_stellar_account;
+use drip_common::is_zero_address;
 
 pub use errors::Error;
 use storage::{DataKey, StreamInfo, FLAG_CANCELLED, FLAG_CLAWBACK_ENABLED, FLAG_PAUSED};
@@ -85,7 +85,7 @@ impl DripStream {
         //   * create a self-stream (recipient == sender).
         // `is_zero_stellar_account` is the exact same helper the factory uses
         // (contracts/common/src/lib.rs), so both paths reject identical inputs.
-        if is_zero_stellar_account(&env, &recipient) || recipient == sender {
+        if is_zero_address(&env, &recipient) || recipient == sender {
             panic_with_error!(&env, Error::InvalidRecipient);
         }
 
@@ -159,6 +159,7 @@ impl DripStream {
                 flags,
                 withdrawn: 0,
                 paused_at: 0,
+                operator: None,
             },
         );
     }
@@ -704,7 +705,7 @@ impl DripStream {
     /// Only the sender may call this. The operator has no power over
     /// withdrawals (which are recipient-only) or recipient transfers.
     pub fn set_operator(env: Env, caller: Address, operator: Address) -> Result<(), Error> {
-        let info = state::load(&env);
+        let mut info = state::load(&env);
         state::assert_not_cancelled(&info)?;
         if caller != info.sender {
             return Err(Error::NotAuthorized);
@@ -724,13 +725,15 @@ impl DripStream {
         }
 
         env.storage().instance().set(&DataKey::Operator, &operator);
+        info.operator = Some(operator.clone());
+        state::save(&env, &info);
         events::operator_set(&env, &caller, &operator);
         Ok(())
     }
 
     /// Sender revokes the operator, removing all delegated sender rights.
     pub fn revoke_operator(env: Env, caller: Address) -> Result<(), Error> {
-        let info = state::load(&env);
+        let mut info = state::load(&env);
         state::assert_not_cancelled(&info)?;
         if caller != info.sender {
             return Err(Error::NotAuthorized);
@@ -739,6 +742,8 @@ impl DripStream {
         ttl::bump(&env);
 
         env.storage().instance().remove(&DataKey::Operator);
+        info.operator = None;
+        state::save(&env, &info);
         events::operator_revoked(&env, &caller);
         Ok(())
     }

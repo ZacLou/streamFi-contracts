@@ -41,6 +41,7 @@ pub fn load(env: &Env) -> StreamInfo {
         withdrawn: s.get(&DataKey::Withdrawn).unwrap_or(0),
         paused_at: s.get(&DataKey::PausedAt).unwrap_or(0),
         flags,
+        operator: s.get(&DataKey::Operator),
     }
 }
 
