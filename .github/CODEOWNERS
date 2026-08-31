@@ -1,11 +1,15 @@
 # CODEOWNERS for conduit-protocol/streamFi-contracts
 #
 # GitHub evaluates this file top-to-bottom and uses the LAST matching pattern
-# to determine owners. The single rule below is the default: anyone touching
-# any file gets routed to the union of the audit-round-2 contributor pool.
-# Refine per-area routes after domain ownership settles.
+# to determine owners.
 
 # Default owners for every change.
-# Branch protection on `main` should require at least one approval from
+# Branch protection on main should require at least one approval from
 # this set before a PR can be merged.
 * @Syringe7 @MoscowDev @IbrahimIjai @Jaydbrown @Ebuka321
+
+# Contract code requires review from the contracts domain owners.
+# This pattern is used by branch protection to enforce a review from
+# someone familiar with the Soroban contracts before merge.
+/contracts/** @Syringe7 @MoscowDev @IbrahimIjai @Jaydbrown @Ebuka321
+/src/**       @Syringe7 @MoscowDev @IbrahimIjai @Jaydbrown @Ebuka321
