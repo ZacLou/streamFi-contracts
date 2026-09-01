@@ -1951,3 +1951,28 @@ fn flag_getters_map_to_correct_bit() {
         assert!(!getter(&info), "is_{} must be false when flags=0", name);
     }
 }
+
+#[test]
+fn withdraw_remaining_is_zero_when_draining_full_balance() {
+    // Withdrawing the entire funded balance must not panic and must leave the
+    // `withdrawn` event's `remaining` field at 0, matching the contract's real
+    // post-withdrawal token balance (#415).
+    let s = Setup::new(100, 3600, false);
+    s.advance_secs(3600); // end reached; streamed == full deposit (360_000)
+    s.client.withdraw(&360_000);
+    let contract_after = s.token.balance(&s.client.address);
+    assert_eq!(contract_after, 0);
+
+    let all_events = s.env.events().all();
+    let stream_events: std::vec::Vec<_> = all_events
+        .iter()
+        .filter(|(contract, _, _)| contract == &s.client.address)
+        .collect();
+    let data: (i128, i128, i128) = stream_events[stream_events.len() - 1]
+        .2
+        .try_into_val(&s.env)
+        .unwrap();
+    let (_amount, _total, remaining) = data;
+    assert_eq!(remaining, 0);
+    assert_eq!(remaining, contract_after);
+}
