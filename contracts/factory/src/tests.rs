@@ -622,9 +622,6 @@ fn append_refreshes_ttl_on_all_pages_not_just_newest() {
     assert_eq!(count_remaining, ttl::EXTEND_TO);
 }
 
-
-
-
 // ── Issue #459: paged-index offset math invariants ──────────────────────────
 
 use crate::index::{append_base, logical_to_physical_offset};
@@ -657,7 +654,10 @@ fn logical_to_physical_monotonicity() {
             assert!(
                 physical >= prev,
                 "legacy_count={}, logical={} -> physical={} (prev={}); monotonicity violated",
-                legacy_count, logical, physical, prev
+                legacy_count,
+                logical,
+                physical,
+                prev
             );
         }
         prev = physical;
@@ -715,7 +715,9 @@ fn logical_to_physical_range() {
         assert!(
             physical >= logical,
             "legacy_count={}, logical={} -> physical={}; physical < logical",
-            legacy_count, logical, physical
+            legacy_count,
+            logical,
+            physical
         );
         assert_eq!(
             physical, expected_physical,
@@ -758,15 +760,16 @@ fn logical_to_physical_boundary_crossing() {
 
         let physical_after = logical_to_physical_offset(logical_before + 1, Some(legacy_count));
         assert_eq!(
-            physical_after, expected_after,
+            physical_after,
+            expected_after,
             "legacy_count={}, logical={}: expected jump to append_base",
-            legacy_count, logical_before + 1
+            legacy_count,
+            logical_before + 1
         );
     }
 }
 
 #[test]
-
 #[test]
 fn page_boundary_consistency() {
     const PAGE_SIZE: u32 = 100;
@@ -795,7 +798,8 @@ fn page_boundary_consistency() {
             page_index * PAGE_SIZE + page_offset,
             physical,
             "legacy_count={}, logical={}: page decomposition inconsistent",
-            legacy_count, logical
+            legacy_count,
+            logical
         );
     }
 }
