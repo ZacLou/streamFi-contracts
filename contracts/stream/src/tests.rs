@@ -1565,7 +1565,13 @@ fn operator_events_emit_correct_topic_shape_and_sequence() {
     // Event 1: set_op
     assert_eq!(
         stream_events[1].1,
-        (symbol_short!("set_op"), s.sender.clone(), operator.clone(), 2_u64).into_val(&s.env)
+        (
+            symbol_short!("set_op"),
+            s.sender.clone(),
+            operator.clone(),
+            2_u64
+        )
+            .into_val(&s.env)
     );
     let set_op_data: Address = stream_events[1].2.try_into_val(&s.env).unwrap();
     assert_eq!(set_op_data, operator);
