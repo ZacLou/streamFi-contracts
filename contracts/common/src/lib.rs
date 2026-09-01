@@ -46,6 +46,18 @@ pub fn is_zero_address(env: &Env, address: &Address) -> bool {
     address == &zero_contract
 }
 
+/// Deprecated alias for [`is_zero_address`].
+///
+/// Previous stream guard code referenced `is_zero_stellar_account`, which
+/// never existed and broke the build. The canonical name is
+/// [`is_zero_address`]. This alias is provided so any external consumers
+/// that somehow reference the old name continue to compile during the
+/// deprecation period.
+#[deprecated(note = "use is_zero_address instead")]
+pub fn is_zero_stellar_account(env: &Env, address: &Address) -> bool {
+    is_zero_address(env, address)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -76,5 +88,20 @@ mod tests {
         let env = Env::default();
         let address = Address::generate(&env);
         assert!(!is_zero_address(&env, &address));
+    }
+
+    #[test]
+    fn deprecated_alias_matches_canonical() {
+        let env = Env::default();
+        let zero_account = Address::from_string(&soroban_sdk::String::from_str(
+            &env,
+            "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+        ));
+        let normal = Address::generate(&env);
+        #[allow(deprecated)]
+        {
+            assert!(is_zero_stellar_account(&env, &zero_account));
+            assert!(!is_zero_stellar_account(&env, &normal));
+        }
     }
 }
