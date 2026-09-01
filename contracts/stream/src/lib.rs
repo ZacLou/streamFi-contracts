@@ -812,6 +812,13 @@ impl DripStream {
         math::streamed_amount(&env, &info)
     }
 
+    /// Read-only alias for [`streamed_total`] (#461): cumulative streamed
+    /// amount at the current ledger time, matching the on-chain
+    /// `streamed_amount` math.
+    pub fn total_streamed(env: Env) -> Result<i128, Error> {
+        Self::streamed_total(env)
+    }
+
     /// Read-only: full stream state.
     pub fn info(env: Env) -> StreamInfo {
         state::load(&env)

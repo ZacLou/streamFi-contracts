@@ -128,6 +128,14 @@ fn withdraw_correct_after_elapsed() {
 }
 
 #[test]
+fn total_streamed_matches_streamed_total() {
+    let s = Setup::new(1_000, 3_600, false);
+    s.advance_secs(100);
+    assert_eq!(s.client.total_streamed(), 100_000);
+    assert_eq!(s.client.total_streamed(), s.client.streamed_total());
+}
+
+#[test]
 fn withdraw_capped_at_available() {
     let s = Setup::new(100, 3600, false);
     s.advance_secs(50);
