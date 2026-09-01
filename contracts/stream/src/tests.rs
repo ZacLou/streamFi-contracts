@@ -2160,7 +2160,6 @@ fn withdraw_remaining_is_zero_when_draining_full_balance() {
     assert_eq!(remaining, contract_after);
 }
 
-
 // ── Re-entrancy guard convention audit (issue #442) ────────────────────────
 
 #[test]
@@ -2181,7 +2180,9 @@ fn every_state_mutating_entry_point_uses_with_guard() {
     let sender = Address::generate(&env);
     let recipient = Address::generate(&env);
     let token_admin = Address::generate(&env);
-    let token_addr = env.register_stellar_asset_contract_v2(token_admin.clone()).address();
+    let token_addr = env
+        .register_stellar_asset_contract_v2(token_admin.clone())
+        .address();
     let tok = token::Client::new(&env, &token_addr);
     let tok_admin = token::StellarAssetClient::new(&env, &token_addr);
 
@@ -2205,7 +2206,16 @@ fn every_state_mutating_entry_point_uses_with_guard() {
     tok.transfer(&sender, &stream_id, &deposit);
 
     // initialize with clawback enabled so clawback can be tested
-    client.initialize(&sender, &recipient, &token_addr, &100, &now, &(now + 3600), &true, &2_592_000_u64);
+    client.initialize(
+        &sender,
+        &recipient,
+        &token_addr,
+        &100,
+        &now,
+        &(now + 3600),
+        &true,
+        &2_592_000_u64,
+    );
 
     // Advance past start time so there is something to withdraw.
     env.ledger().set(LedgerInfo {
