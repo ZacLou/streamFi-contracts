@@ -1427,6 +1427,8 @@ mod tests {
 
         let result = client.try_revoke_role(&admin, &Role::Admin, &admin);
         assert_eq!(result, Err(Ok(Error::LastAdmin)));
+        // State must be unchanged — the admin role must still be present.
+        assert!(client.has_role(&Role::Admin, &admin));
     }
 
     #[test]
