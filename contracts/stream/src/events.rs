@@ -171,7 +171,7 @@ pub fn recipient_transferred(env: &Env, old_recipient: &Address, new_recipient: 
 pub fn operator_set(env: &Env, sender: &Address, operator: &Address) {
     let sequence = next_sequence(env);
     env.events().publish(
-        (symbol_short!("set_op"), sender.clone(), sequence),
+        (symbol_short!("set_op"), sender.clone(), operator.clone(), sequence),
         operator.clone(),
     );
 }
