@@ -23,4 +23,6 @@ pub enum Error {
     OperatorAlreadySet = 17,
     NotInitialized = 18,
     InvalidRecipient = 19,
+    BackdatedStream = 20,
+    StreamUnderfunded = 21,
 }

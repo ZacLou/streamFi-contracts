@@ -14,8 +14,15 @@ pub enum DataKey {
     /// pattern matching `DripStream`'s `set_operator` design.
     /// Absent key means no operator has been delegated.
     Operator,
+    /// Maximum amount a delegated operator may withdraw in a single call.
+    ///
+    /// When set, `withdraw` enforces this cap for operator-authenticated
+    /// withdrawals while the owner remains unbounded. If this key is absent,
+    /// the operator is effectively unable to withdraw until the owner sets a
+    /// positive cap.
+    OperatorWithdrawLimit,
     /// Emergency-pause flag. When `true`, all state-mutating entry points
-    /// (`deposit`, `withdraw`, `set_limit`) revert before touching state.
+    /// (deposit, withdraw, set_limit) revert before touching state.
     Paused,
     /// Pending owner address for the 2-step owner transfer.
     /// Set by `propose_owner`, consumed by `accept_owner`.
@@ -49,14 +56,21 @@ pub fn get_max_limit(env: &Env) -> Option<i128> {
     env.storage().instance().get(&DataKey::MaxLimit)
 }
 
-#[cfg(test)]
+#[allow(dead_code)]
 pub fn set_balance(env: &Env, v: &i128) {
     env.storage().instance().set(&DataKey::Balance, v);
 }
 
-#[cfg(test)]
+#[allow(dead_code)]
 pub fn get_balance(env: &Env) -> Option<i128> {
     env.storage().instance().get(&DataKey::Balance)
+}
+
+#[allow(dead_code)]
+pub fn remove_operator_withdraw_limit(env: &Env) {
+    env.storage()
+        .instance()
+        .remove(&DataKey::OperatorWithdrawLimit);
 }
 
 pub fn set_operator(env: &Env, op: &Address) {
@@ -69,6 +83,18 @@ pub fn get_operator(env: &Env) -> Option<Address> {
 
 pub fn remove_operator(env: &Env) {
     env.storage().instance().remove(&DataKey::Operator);
+}
+
+pub fn set_operator_withdraw_limit(env: &Env, v: &i128) {
+    env.storage()
+        .instance()
+        .set(&DataKey::OperatorWithdrawLimit, v);
+}
+
+pub fn get_operator_withdraw_limit(env: &Env) -> Option<i128> {
+    env.storage()
+        .instance()
+        .get(&DataKey::OperatorWithdrawLimit)
 }
 
 pub fn set_paused(env: &Env, paused: bool) {
