@@ -38,7 +38,7 @@ fn deploy_factory(env: &Env) -> DripFactoryClient<'_> {
     governor_client.initialize(&authority, &fee_recipient, &factory_id);
 
     let client = DripFactoryClient::new(env, &factory_id);
-    let dummy_hash = BytesN::from_array(env, &[0u8; 32]);
+    let dummy_hash = BytesN::from_array(env, &[1u8; 32]);
     client.initialize(&dummy_hash, &governor_id);
     client
 }
@@ -91,7 +91,7 @@ fn a_real_fee_of_30_is_distinguishable_from_an_unreadable_one() {
     // Governor address points at nothing — the fee cannot be read at all.
     let orphan_id = env.register_contract(None, DripFactory);
     let orphan = DripFactoryClient::new(&env, &orphan_id);
-    let dummy_hash = BytesN::from_array(&env, &[0u8; 32]);
+    let dummy_hash = BytesN::from_array(&env, &[1u8; 32]);
     orphan.initialize(&dummy_hash, &Address::generate(&env));
 
     assert_eq!(orphan.factory_status().protocol_fee_bps, None);

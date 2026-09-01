@@ -60,6 +60,15 @@ pub fn limit_set(env: &Env, caller: &Address, old_limit: i128, new_limit: i128) 
     );
 }
 
+/// Emitted by `set_operator_withdraw_limit` when the owner configures how much
+/// a delegated operator may withdraw in a single call.
+pub fn operator_withdraw_limit_set(env: &Env, caller: &Address, old_limit: i128, new_limit: i128) {
+    env.events().publish(
+        (symbol_short!("op_limit"), caller.clone()),
+        (old_limit, new_limit),
+    );
+}
+
 /// Emitted by `set_operator` when the owner delegates a new operator.
 ///
 /// Topics: `("set_op", caller)` — the owner.

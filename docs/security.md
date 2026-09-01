@@ -84,7 +84,7 @@ A malicious sender pausing a stream indefinitely, blocking further accrual for t
 
 A sender with `clawback_enabled = true` can call `clawback()` to reclaim all unstreamed tokens at any time, effectively starving the recipient of future payments. Recipients should verify `clawback_enabled` before accepting a stream.
 
-**Mitigation:** The app should display a prominent warning when `clawback_enabled = true`. Consider requiring recipient acknowledgement before stream activation.
+**Mitigation:** The app should display a prominent warning when `clawback_enabled = true`. Additionally, the protocol blocks `clawback()` while a stream is paused; the sender must `resume()` before reclaiming any unstreamed balance. Consider requiring recipient acknowledgement before stream activation.
 
 ---
 

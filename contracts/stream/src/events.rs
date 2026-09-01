@@ -4,19 +4,31 @@ use crate::{storage::DataKey, Error};
 
 /// Allocate the next event sequence before publishing its payload.
 ///
-/// Event publication and storage writes are part of the same Soroban
-/// transaction, so either both commit or both are rolled back. Existing
-/// streams that predate this key start at sequence zero.
+/// The sequence is now part of the persisted `StreamInfo`/`Config` payload so it
+/// survives the consolidated state migration. Legacy streams without `Config` are
+/// still readable via the fallback path for as long as they remain on the old
+/// storage layout.
 ///
 /// Boundary check: `current` is validated to prevent arithmetic overflow
 /// on the sequence counter (which would silently consume future events).
 fn next_sequence(env: &Env) -> u64 {
     let storage = env.storage().instance();
-    let current = storage.get::<_, u64>(&DataKey::EventSequence).unwrap_or(0);
+    let current = if storage.has(&DataKey::Config) {
+        crate::state::load(env).event_sequence
+    } else {
+        storage.get::<_, u64>(&DataKey::EventSequence).unwrap_or(0)
+    };
     let Some(next) = current.checked_add(1) else {
         panic_with_error!(env, Error::ArithmeticOverflow);
     };
-    storage.set(&DataKey::EventSequence, &next);
+
+    if storage.has(&DataKey::Config) {
+        let mut info = crate::state::load(env);
+        info.event_sequence = next;
+        crate::state::save(env, &info);
+    } else {
+        storage.set(&DataKey::EventSequence, &next);
+    }
     next
 }
 
@@ -30,6 +42,7 @@ fn assert_non_negative_amount(env: &Env, value: i128) {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn created(
     env: &Env,
     sender: &Address,
@@ -38,6 +51,7 @@ pub fn created(
     rate_per_second: i128,
     start_time: u64,
     end_time: u64,
+    storage_version: u32,
 ) {
     assert_non_negative_amount(env, rate_per_second);
 
@@ -50,6 +64,7 @@ pub fn created(
             rate_per_second,
             start_time,
             end_time,
+            storage_version,
         ),
     );
 }
@@ -64,6 +79,7 @@ pub fn withdrawn(
     // Boundary checks before any state mutation or event emission.
     assert_non_negative_amount(env, amount);
     assert_non_negative_amount(env, total_withdrawn);
+    assert_non_negative_amount(env, remaining);
 
     let sequence = next_sequence(env);
     env.events().publish(
