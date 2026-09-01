@@ -159,6 +159,8 @@ dependencies = [
  "drip-governor",
  "drip-oracle",
  "drip-stream",
+ "serde",
+ "serde_json",
  "soroban-sdk",
 ]
 

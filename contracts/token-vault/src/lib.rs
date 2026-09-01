@@ -173,6 +173,33 @@ impl TokenVault {
         Ok(())
     }
 
+    /// Owner sets the per-call cap that bounds how much a delegated operator
+    /// may move in a single `withdraw`. Without a limit an operator cannot
+    /// withdraw at all — `withdraw` rejects operator calls with
+    /// `LimitExceeded` until this is configured. Owner-only.
+    pub fn set_operator_withdraw_limit(
+        env: Env,
+        caller: Address,
+        new_limit: i128,
+    ) -> Result<(), Error> {
+        assert_not_paused(&env)?;
+        let owner = get_owner(&env).ok_or(Error::NotInitialized)?;
+        if caller != owner {
+            return Err(Error::NotAuthorized);
+        }
+        caller.require_auth();
+
+        if new_limit <= 0 {
+            return Err(Error::InvalidAmount);
+        }
+
+        let old_limit = get_operator_withdraw_limit(&env).unwrap_or(0);
+        bump_instance(&env);
+        set_operator_withdraw_limit(&env, &new_limit);
+        events::operator_withdraw_limit_set(&env, &caller, old_limit, new_limit);
+        Ok(())
+    }
+
     /// Raising `max_limit` requires `caller == owner`; an operator may only
     /// lower it. `max_limit` is the vault's core risk parameter — it caps
     /// total exposure — so a delegated operator key (a hot wallet meant for

@@ -100,23 +100,22 @@ pub struct StreamPage {
     pub total: u32,
 }
 
-/// Storage keys for the DripFactory contract.
+/// Aggregate counters for the whole factory registry.
 ///
-/// The `#[contracttype]` macro serializes each variant as an XDR tagged union:
-/// the discriminant (variant index) followed by the encoded inner type. This
-/// means `DataKey::StreamAddr(42)` and `DataKey::StreamAddr(43)` are distinct
-/// keys in Soroban's storage trie, each serialized as:
-///   [discriminant: u32][stream_id: u64]
-///
-/// Similarly, `DataKey::BySender(address)` serializes as:
-///   [discriminant: u32][address: XDR-encoded Address]
-///
-/// Storage is split across two tiers:
-/// - **Instance storage**: Small, contract-scoped data that scales with the
-///   number of operations (e.g., counters, config). Bounded by instance size limits.
-/// - **Persistent storage**: Per-entity data that grows without bound (e.g.,
-///   per-stream addresses, per-user indices). Avoids hitting instance size limits
-///   as the protocol scales. Each entry has its own TTL and can be extended independently.
+/// Maintained incrementally on every successful `create_stream` and
+/// factory-routed cancellation so dashboards can display totals without
+/// paging the entire sender/recipient index.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Aggregate {
+    /// Total number of streams ever created through this factory.
+    /// Equivalent to the historical maximum of `StreamCount`.
+    pub total_supply: u64,
+    /// Number of streams that have not yet been cancelled.
+    /// Decremented by `cancel_batch_streams` and by the public
+    /// `record_cancel` hook for direct stream cancellations.
+    pub active_streams: u64,
+}
 
 /// Current storage layout version for this contract.
 ///
@@ -127,6 +126,24 @@ pub struct StreamPage {
 /// paged `BySender*`/`ByRecipient*` indices, `LastBumpedId`, etc.).
 pub const CURRENT_STORAGE_VERSION: u32 = 1;
 
+/// Storage keys for the DripFactory contract.
+///
+/// The `#[contracttype]` macro serializes each variant as an XDR tagged union:
+/// the discriminant (variant index) followed by the encoded inner type. This
+/// means `DataKey::StreamAddr(42)` and `DataKey::StreamAddr(43)` are distinct
+/// keys in Soroban's storage trie, each serialized as
+/// `[discriminant: u32][stream_id: u64]`.
+///
+/// Similarly, `DataKey::BySender(address)` serializes as
+/// `[discriminant: u32][address: XDR-encoded Address]`.
+///
+/// Storage is split across two tiers:
+///
+/// - **Instance storage**: Small, contract-scoped data that scales with the
+///   number of operations (e.g., counters, config). Bounded by instance size limits.
+/// - **Persistent storage**: Per-entity data that grows without bound (e.g.,
+///   per-stream addresses, per-user indices). Avoids hitting instance size limits
+///   as the protocol scales. Each entry has its own TTL and can be extended independently.
 #[contracttype]
 pub enum DataKey {
     /// **Instance storage.** Monotonically incrementing stream counter.
@@ -184,6 +201,11 @@ pub enum DataKey {
     /// Value: `u64` — the last stream ID whose persistent `StreamAddr` TTL
     /// was bumped by the walker. Missing entry is treated as `0`.
     LastBumpedId,
+
+    /// **Instance storage.** Aggregate counters maintained on create/cancel.
+    /// Key: `DataKey::Aggregate` (no inner type, discriminant only)
+    /// Value: `Aggregate` — total supply and active-stream count.
+    Aggregate,
 
     /// **Instance storage.** Reentrancy guard for `create_stream`.
     /// Key: `DataKey::CreateLock` (no inner type, discriminant only)

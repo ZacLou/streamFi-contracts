@@ -87,7 +87,7 @@ impl DripGovernor {
         s.set(&DataKey::MaxDurationSeconds, &315_360_000_u64); // 10 years
         s.set(&DataKey::MaxRatePerSecond, &1_000_000_000_000_000_i128);
         s.set(&DataKey::FactoryAddress, &factory_address);
-        s.set(&DataKey::ForceCancelPauseThresholdSeconds, &2_592_000_u64); // 30 days
+        s.set(&DataKey::ForceCancelPauseSecs, &2_592_000_u64); // 30 days
 
         role::grant(&env, Role::Admin, &authority);
         role::grant(&env, Role::FeeManager, &authority);
@@ -307,7 +307,8 @@ impl DripGovernor {
         caller: Address,
         new_authority: Address,
     ) -> Result<(), Error> {
-        if is_zero_address(&env, &new_authority)
+        if new_authority == caller
+            || is_zero_address(&env, &new_authority)
             || role::has_role(&env, Role::Admin, &new_authority)
         {
             return Err(Error::InvalidParam);
@@ -548,7 +549,7 @@ impl DripGovernor {
         role::require_role_or_admin(&env, &caller, Role::RateManager)?;
         env.storage()
             .instance()
-            .set(&DataKey::ForceCancelPauseThresholdSeconds, &seconds);
+            .set(&DataKey::ForceCancelPauseSecs, &seconds);
         events::set_force_cancel_pause_threshold(&env, &caller, seconds);
         Ok(())
     }

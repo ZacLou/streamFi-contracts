@@ -51,7 +51,7 @@ pub enum DataKey {
     FactoryAddress,
     /// Seconds a stream must remain paused before `DripStream::force_cancel`
     /// becomes callable by the recipient.
-    ForceCancelPauseThresholdSeconds,
+    ForceCancelPauseSecs,
     /// Presence marks that `account` holds `role`. The stored value is an
     /// unused `bool`; membership is expressed entirely by the key existing.
     Role(RoleKey),

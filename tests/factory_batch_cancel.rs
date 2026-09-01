@@ -59,6 +59,7 @@ mod factory_batch_cancel {
             &now,
             &(now + duration),
             &false,
+            &2_592_000_u64,
         );
 
         (stream_id, token_addr)

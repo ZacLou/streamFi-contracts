@@ -14,7 +14,7 @@ use soroban_sdk::{contract, contractimpl, panic_with_error, token, Address, Env}
 use drip_common::is_zero_address;
 
 pub use errors::Error;
-use storage::{DataKey, StreamInfo, FLAG_CANCELLED, FLAG_CLAWBACK_ENABLED, FLAG_PAUSED};
+use storage::{DataKey, StreamInfo, FLAG_CLAWBACK_ENABLED, FLAG_PAUSED};
 
 #[contract]
 pub struct DripStream;
@@ -62,7 +62,7 @@ impl DripStream {
         start_time: u64,
         end_time: u64,
         clawback_enabled: bool,
-        force_cancel_pause_threshold_seconds: u64,
+        force_cancel_pause_secs: u64,
     ) {
         if env.storage().instance().has(&DataKey::Config) {
             panic_with_error!(&env, Error::AlreadyInitialized);
@@ -80,7 +80,7 @@ impl DripStream {
 
         // A zero threshold would make `force_cancel` callable the instant a
         // stream is paused, defeating its purpose as a bounded grace period.
-        if force_cancel_pause_threshold_seconds == 0 {
+        if force_cancel_pause_secs == 0 {
             panic_with_error!(&env, Error::InvalidAmount);
         }
 
@@ -132,7 +132,7 @@ impl DripStream {
         s.set(&DataKey::StorageVersion, &storage::CURRENT_STORAGE_VERSION);
         s.set(
             &DataKey::ForceCancelPauseThresholdSecs,
-            &force_cancel_pause_threshold_seconds,
+            &force_cancel_pause_secs,
         );
 
         // Write the initial state before emitting the creation event so the
@@ -224,15 +224,17 @@ impl DripStream {
         // Perform the transfer, then derive `remaining` from the single balance
         // captured above. `checked_sub` (rather than a bare `-`) guarantees no
         // underflow panic even if a fee-on-transfer / rebasing token leaves the
-        // contract with less than `to_send`; the worst case is a conservative 0.
+        // contract with less than `to_send`; the withdrawal is reverted instead.
         tk.transfer(&contract_addr, &info.recipient, &to_send);
 
-        let remaining = balance.checked_sub(to_send).unwrap_or(0);
+        let remaining = balance
+            .checked_sub(to_send)
+            .ok_or(Error::ArithmeticOverflow)?;
         events::withdrawn(env, &info.recipient, to_send, new_withdrawn, remaining);
         Ok(to_send)
     }
 
-    /// Sender (or operator) cancels the stream.
+    /// Sender or delegated operator cancels the stream.
     ///
     /// Settles everything atomically:
     ///   - Tokens the recipient has earned (but not yet withdrawn) are sent
@@ -277,7 +279,7 @@ impl DripStream {
             .ok_or(Error::ArithmeticOverflow)?;
 
         let mut cancelled_info = info.clone();
-        cancelled_info.flags |= FLAG_CANCELLED;
+        cancelled_info.mark_cancelled();
         cancelled_info.withdrawn = total_withdrawn;
         state::save(env, &cancelled_info);
 
@@ -295,7 +297,7 @@ impl DripStream {
         Ok(())
     }
 
-    /// Sender (or operator) pauses the stream.
+    /// Sender or delegated operator pauses the stream.
     pub fn pause(env: Env, caller: Address) -> Result<(), Error> {
         state::with_guard(&env, |env| Self::_pause(env, &caller))
     }
@@ -329,7 +331,7 @@ impl DripStream {
         Ok(())
     }
 
-    /// Sender (or operator) resumes a paused stream.
+    /// Sender or delegated operator resumes a paused stream.
     pub fn resume(env: Env, caller: Address) -> Result<(), Error> {
         state::with_guard(&env, |env| Self::_resume(env, &caller))
     }
@@ -384,7 +386,7 @@ impl DripStream {
         Ok(())
     }
 
-    /// Sender (or operator) deposits additional tokens into the stream.
+    /// Sender or delegated operator deposits additional tokens into the stream.
     ///
     /// Auth is checked immediately after the minimal state load needed to
     /// know `sender` -- before `ttl::bump` (a storage write) or the
@@ -437,7 +439,7 @@ impl DripStream {
         Ok(())
     }
 
-    /// Sender (or operator) extends the stream duration by `extra_time_seconds`.
+    /// Sender or delegated operator extends the stream duration by `extra_time_seconds`.
     ///
     /// Transfers the exact required deposit (rate_per_second × extra_time_seconds)
     /// from the caller into the contract and updates `end_time`.
@@ -507,7 +509,7 @@ impl DripStream {
         Ok(())
     }
 
-    /// Sender (or operator) tops up and extends the stream in a single call.
+    /// Sender or delegated operator tops up and extends the stream in a single call.
     ///
     /// Combines [`top_up`](Self::top_up) and [`extend_duration`](Self::extend_duration)
     /// into one authorized transaction, reducing round-trips and the risk of a
@@ -581,7 +583,7 @@ impl DripStream {
         Ok(())
     }
 
-    /// Sender reclaims unstreamed tokens (only if clawback was enabled).
+    /// Sender or delegated operator reclaims unstreamed tokens (only if clawback was enabled).
     ///
     /// A paused stream must be resumed before clawback is allowed; otherwise the
     /// sender could freeze accrual and immediately drain the remaining principal
@@ -699,7 +701,7 @@ impl DripStream {
             .ok_or(Error::ArithmeticOverflow)?;
 
         let mut cancelled_info = info.clone();
-        cancelled_info.flags |= FLAG_CANCELLED;
+        cancelled_info.mark_cancelled();
         cancelled_info.withdrawn = total_withdrawn;
         state::save(env, &cancelled_info);
 

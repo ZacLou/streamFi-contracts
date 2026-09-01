@@ -92,4 +92,9 @@ impl StreamInfo {
     pub fn is_clawback_enabled(&self) -> bool {
         (self.flags & FLAG_CLAWBACK_ENABLED) != 0
     }
+
+    /// Mark the stream as cancelled, setting the correct flag bit.
+    pub fn mark_cancelled(&mut self) {
+        self.flags |= FLAG_CANCELLED;
+    }
 }

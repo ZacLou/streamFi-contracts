@@ -57,4 +57,8 @@ pub enum Error {
     /// (`StreamCount`, `StreamAddr`, the paged indices, etc.) without an
     /// explicit migration.
     StorageVersionMismatch = 30,
+    /// `initialize` was given the all-zero Stellar account address for the
+    /// governor, which would leave every `create_stream` call pointing at a
+    /// non-existent governor contract.
+    InvalidGovernor = 31,
 }

@@ -11,7 +11,10 @@ use soroban_sdk::{
     token, Address, Env, IntoVal, TryIntoVal,
 };
 
-use crate::{storage::DataKey, DripStream, DripStreamClient, Error};
+use crate::{
+    storage::{DataKey, StreamInfo, FLAG_CANCELLED, FLAG_CLAWBACK_ENABLED, FLAG_PAUSED},
+    DripStream, DripStreamClient, Error,
+};
 
 /// Deploy a mock token and a DripStream, returning both clients and
 /// the sender/recipient addresses.
@@ -335,6 +338,7 @@ fn clawback_open_ended_refunds_unstreamed_remainder() {
         &now,
         &0, // open-ended — no end_time
         &true,
+        &2_592_000_u64,
     );
 
     // Advance 30 s → 3_000 stroops have accrued to the recipient.
@@ -405,6 +409,7 @@ fn clawback_open_ended_does_not_touch_accrued_funds() {
         &now,
         &0, // open-ended
         &true,
+        &2_592_000_u64,
     );
 
     // Advance 50 s → 5_000 stroops accrued.
@@ -551,8 +556,16 @@ fn re_initializing_an_active_stream_panics() {
     // must be rejected — otherwise they could redirect the escrowed balance
     // to themselves via cancel()/clawback().
     let attacker = Address::generate(&s.env);
-    s.client
-        .initialize(&attacker, &attacker, &s.token.address, &1, &0, &0, &false, &2_592_000_u64);
+    s.client.initialize(
+        &attacker,
+        &attacker,
+        &s.token.address,
+        &1,
+        &0,
+        &0,
+        &false,
+        &2_592_000_u64,
+    );
 }
 
 // ── Time-range boundary guard (issue #81) ────────────────────────────────────
@@ -970,7 +983,16 @@ fn extend_duration_rejected_for_open_ended() {
     let stream_id = env.register_contract(None, DripStream);
     let client = DripStreamClient::new(&env, &stream_id);
 
-    client.initialize(&sender, &recipient, &token_addr, &100, &now, &0, &false, &2_592_000_u64);
+    client.initialize(
+        &sender,
+        &recipient,
+        &token_addr,
+        &100,
+        &now,
+        &0,
+        &false,
+        &2_592_000_u64,
+    );
 
     let result = client.try_extend_duration(&sender, &100);
     assert_eq!(result, Err(Ok(Error::InvalidTimeRange)));
@@ -1280,7 +1302,16 @@ fn top_up_and_extend_rejected_for_open_ended_stream() {
     let stream_id = env.register_contract(None, DripStream);
     let client = DripStreamClient::new(&env, &stream_id);
 
-    client.initialize(&sender, &recipient, &token_addr, &100, &now, &0, &false, &2_592_000_u64);
+    client.initialize(
+        &sender,
+        &recipient,
+        &token_addr,
+        &100,
+        &now,
+        &0,
+        &false,
+        &2_592_000_u64,
+    );
 
     let result = client.try_top_up_and_extend(&sender, &10_000, &100);
     assert_eq!(result, Err(Ok(Error::InvalidTimeRange)));
@@ -1883,42 +1914,47 @@ fn save_migrates_legacy_per_field_keys_to_config() {
     // on the first mutating call, and all legacy keys must be removed.
     let s = Setup::new(100, 3600, false);
     let env = &s.env;
+    let id = s.client.address.clone();
 
-    // Snapshot the canonical state, then remove the consolidated Config key.
+    // Snapshot the canonical state, then remove the consolidated Config key
+    // and write the legacy per-field layout to simulate a v0 stream.
     let info = s.client.info();
-    let instance = env.storage().instance();
-    instance.remove(&DataKey::Config);
-
-    // Write the legacy per-field layout to simulate a v0 stream.
-    instance.set(&DataKey::Sender, &info.sender);
-    instance.set(&DataKey::Recipient, &info.recipient);
-    instance.set(&DataKey::Token, &info.token);
-    instance.set(&DataKey::RatePerSecond, &info.rate_per_second);
-    instance.set(&DataKey::StartTime, &info.start_time);
-    instance.set(&DataKey::EndTime, &info.end_time);
-    instance.set(&DataKey::Withdrawn, &info.withdrawn);
-    instance.set(&DataKey::PausedAt, &info.paused_at);
-    instance.set(&DataKey::Flags, &info.flags);
-    instance.set(&DataKey::EventSequence, &info.event_sequence);
+    env.as_contract(&id, || {
+        let instance = env.storage().instance();
+        instance.remove(&DataKey::Config);
+        instance.set(&DataKey::Sender, &info.sender);
+        instance.set(&DataKey::Recipient, &info.recipient);
+        instance.set(&DataKey::Token, &info.token);
+        instance.set(&DataKey::RatePerSecond, &info.rate_per_second);
+        instance.set(&DataKey::StartTime, &info.start_time);
+        instance.set(&DataKey::EndTime, &info.end_time);
+        instance.set(&DataKey::Withdrawn, &info.withdrawn);
+        instance.set(&DataKey::PausedAt, &info.paused_at);
+        instance.set(&DataKey::Flags, &info.flags);
+        instance.set(&DataKey::EventSequence, &info.event_sequence);
+    });
 
     // Trigger migration via a mutating method that calls state::save.
     s.client.pause(&s.sender);
 
-    // After migration, Config must exist...
-    assert!(instance.has(&DataKey::Config));
-    // ...and every legacy key must be gone.
-    assert!(!instance.has(&DataKey::Sender));
-    assert!(!instance.has(&DataKey::Recipient));
-    assert!(!instance.has(&DataKey::Token));
-    assert!(!instance.has(&DataKey::RatePerSecond));
-    assert!(!instance.has(&DataKey::StartTime));
-    assert!(!instance.has(&DataKey::EndTime));
-    assert!(!instance.has(&DataKey::Withdrawn));
-    assert!(!instance.has(&DataKey::PausedAt));
-    assert!(!instance.has(&DataKey::Flags));
-    assert!(!instance.has(&DataKey::EventSequence));
-    assert!(!instance.has(&DataKey::ClawbackEnabled));
-    assert!(!instance.has(&DataKey::Cancelled));
+    env.as_contract(&id, || {
+        let instance = env.storage().instance();
+        // After migration, Config must exist...
+        assert!(instance.has(&DataKey::Config));
+        // ...and every legacy key must be gone.
+        assert!(!instance.has(&DataKey::Sender));
+        assert!(!instance.has(&DataKey::Recipient));
+        assert!(!instance.has(&DataKey::Token));
+        assert!(!instance.has(&DataKey::RatePerSecond));
+        assert!(!instance.has(&DataKey::StartTime));
+        assert!(!instance.has(&DataKey::EndTime));
+        assert!(!instance.has(&DataKey::Withdrawn));
+        assert!(!instance.has(&DataKey::PausedAt));
+        assert!(!instance.has(&DataKey::Flags));
+        assert!(!instance.has(&DataKey::EventSequence));
+        assert!(!instance.has(&DataKey::ClawbackEnabled));
+        assert!(!instance.has(&DataKey::Cancelled));
+    });
 
     // The migrated state should still be readable and correctly paused.
     let migrated = s.client.info();
@@ -1926,4 +1962,49 @@ fn save_migrates_legacy_per_field_keys_to_config() {
     assert_eq!(migrated.sender, info.sender);
     assert_eq!(migrated.recipient, info.recipient);
     assert_eq!(migrated.flags, info.flags | FLAG_PAUSED);
+}
+
+#[test]
+fn flag_getters_map_to_correct_bit() {
+    // Regression test for the merged FLAG_ClAWBACK_ENABLED typo: a table-driven
+    // check guarantees each getter masks exactly the documented bit.
+    let env = Env::default();
+    let sender = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let token = Address::generate(&env);
+    let base = StreamInfo {
+        sender: sender.clone(),
+        recipient: recipient.clone(),
+        token: token.clone(),
+        rate_per_second: 1,
+        start_time: 0,
+        end_time: 1,
+        withdrawn: 0,
+        paused_at: 0,
+        flags: 0,
+        event_sequence: 0,
+    };
+
+    let cases: [(u32, fn(&StreamInfo) -> bool, &str); 3] = [
+        (FLAG_PAUSED, StreamInfo::is_paused, "paused"),
+        (
+            FLAG_CLAWBACK_ENABLED,
+            StreamInfo::is_clawback_enabled,
+            "clawback_enabled",
+        ),
+        (FLAG_CANCELLED, StreamInfo::is_cancelled, "cancelled"),
+    ];
+
+    for (flag, getter, name) in cases {
+        let mut info = base.clone();
+        info.flags = flag;
+        assert!(
+            getter(&info),
+            "is_{} must be true when flags={}",
+            name,
+            flag
+        );
+        info.flags = 0;
+        assert!(!getter(&info), "is_{} must be false when flags=0", name);
+    }
 }

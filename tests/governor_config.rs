@@ -163,10 +163,7 @@ fn min_duration_errors_when_uninitialized() {
     let id = env.register_contract(None, DripGovernor);
     let client = DripGovernorClient::new(&env, &id);
 
-    assert_eq!(
-        client.try_min_duration(),
-        Err(Ok(Error::NotInitialized))
-    );
+    assert_eq!(client.try_min_duration(), Err(Ok(Error::NotInitialized)));
     assert_eq!(
         client.try_min_duration().is_err(),
         client.try_max_duration().is_err()
