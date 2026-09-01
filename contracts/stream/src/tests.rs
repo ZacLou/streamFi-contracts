@@ -695,6 +695,35 @@ fn initialize_rejects_end_time_equal_start() {
     );
 }
 
+#[test]
+#[should_panic(expected = "Error(Contract, #12)")]
+fn initialize_rejects_overflowing_total_obligation() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let sender = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token_addr = env
+        .register_stellar_asset_contract_v2(token_admin.clone())
+        .address();
+
+    let stream_id = env.register_contract(None, DripStream);
+    let client = DripStreamClient::new(&env, &stream_id);
+
+    let start_time: u64 = 1_000_000;
+    client.initialize(
+        &sender,
+        &recipient,
+        &token_addr,
+        &i128::MAX,
+        &start_time,
+        &(start_time + 2),
+        &false,
+        &2_592_000_u64,
+    );
+}
+
 /// The guard must NOT reject legitimate open-ended streams (`end_time == 0`).
 /// This is the regression fence around the boundary check: `0` is a sentinel
 /// for "no end", not a time that precedes `start_time`.
@@ -1075,7 +1104,9 @@ fn extend_duration_rejects_on_arithmetic_overflow() {
     let stream_id = env.register_contract(None, DripStream);
     let client = DripStreamClient::new(&env, &stream_id);
 
-    // Use an extremely large rate so (rate × 2) overflows i128
+    // A 1-second stream at the maximum rate: the initial obligation
+    // (rate × 1) does not overflow, so `initialize` accepts it, but
+    // extending by 2 s makes `extra_time_seconds × rate` overflow i128.
     let huge_rate: i128 = i128::MAX;
     client.initialize(
         &sender,
@@ -1083,7 +1114,7 @@ fn extend_duration_rejects_on_arithmetic_overflow() {
         &token_addr,
         &huge_rate,
         &now,
-        &(now + 10),
+        &(now + 1),
         &false,
         &2_592_000_u64,
     );

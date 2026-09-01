@@ -112,6 +112,19 @@ impl DripStream {
             panic_with_error!(&env, Error::InvalidTimeRange);
         }
 
+        // A bounded stream must not overflow its total obligation up front.
+        // Once enough time elapses, `streamed_amount` multiplies `rate_per_second`
+        // by `elapsed` and would otherwise return `ArithmeticOverflow` in
+        // settlement paths like `withdraw` / `cancel` / `clawback`, which would
+        // permanently lock the escrow. Reject the malformed stream before it is
+        // persisted.
+        if end_time > 0 {
+            let duration = (end_time - start_time) as i128;
+            if rate_per_second.checked_mul(duration).is_none() {
+                panic_with_error!(&env, Error::ArithmeticOverflow);
+            }
+        }
+
         // Reject backdated start times so a directly-initialized stream cannot
         // already be "running" at creation (the recipient could immediately
         // drain a lump sum). Mirrors `create_stream`'s backdated-start guard;
