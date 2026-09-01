@@ -54,7 +54,6 @@ fn require_owner_or_operator(env: &Env, caller: &Address, owner: &Address) -> Re
     } else {
         Err(Error::NotAuthorized)
     }
-
 }
 
 /// Short-circuit helper: reject any state-mutating call while paused.
@@ -64,7 +63,6 @@ fn assert_not_paused(env: &Env) -> Result<(), Error> {
     } else {
         Ok(())
     }
-
 }
 
 #[contractimpl]
@@ -107,7 +105,6 @@ impl TokenVault {
         Ok(())
     }
 
-
     pub fn deposit(env: Env, from: Address, amount: i128) -> Result<(), Error> {
         assert_not_paused(&env)?;
         let owner = get_owner(&env).ok_or(Error::NotInitialized)?;
@@ -143,7 +140,6 @@ impl TokenVault {
         Ok(())
     }
 
-
     pub fn withdraw(env: Env, caller: Address, to: Address, amount: i128) -> Result<(), Error> {
         assert_not_paused(&env)?;
         let owner = get_owner(&env).ok_or(Error::NotInitialized)?;
@@ -177,7 +173,6 @@ impl TokenVault {
         Ok(())
     }
 
-
     /// Owner sets the per-call cap that bounds how much a delegated operator
     /// may move in a single `withdraw`. Without a limit an operator cannot
     /// withdraw at all — `withdraw` rejects operator calls with
@@ -204,7 +199,6 @@ impl TokenVault {
         events::operator_withdraw_limit_set(&env, &caller, old_limit, new_limit);
         Ok(())
     }
-
 
     /// Raising `max_limit` requires `caller == owner`; an operator may only
     /// lower it. `max_limit` is the vault's core risk parameter — it caps
@@ -240,7 +234,6 @@ impl TokenVault {
         Ok(())
     }
 
-
     // ── Operator delegation (owner-gated) ─────────────────────────────────
 
     /// Owner designates an operator who can perform day-to-day actions on
@@ -264,7 +257,6 @@ impl TokenVault {
         Ok(())
     }
 
-
     /// Owner revokes the operator, removing all delegated authority.
     ///
     /// No-op (not an error) if no operator is currently set.
@@ -279,7 +271,6 @@ impl TokenVault {
         events::operator_revoked(&env, &caller);
         Ok(())
     }
-
 
     // ── Owner transfer (owner-gated, 2-step) ──────────────────────────────
 
@@ -312,7 +303,6 @@ impl TokenVault {
         Ok(())
     }
 
-
     /// Accept the pending owner transfer (step 2 of 2).
     ///
     /// Must be called by the pending owner address itself. Completes the
@@ -338,12 +328,10 @@ impl TokenVault {
         Ok(())
     }
 
-
     /// Read-only: the current operator address, if any.
     pub fn operator(env: Env) -> Option<Address> {
         get_operator(&env)
     }
-
 
     /// Read-only: the maximum single-call withdrawal a delegated operator may
     /// execute before the owner raises or removes the cap.
@@ -351,20 +339,16 @@ impl TokenVault {
         get_operator_withdraw_limit(&env)
     }
 
-
     /// Read-only: the current owner address, if any.
     pub fn owner(env: Env) -> Option<Address> {
         get_owner(&env)
     }
-
-
 
     /// Read-only: the pending owner address for an in-flight ownership transfer,
     /// if any. Returns `None` when no transfer has been proposed.
     pub fn pending_owner(env: Env) -> Option<Address> {
         get_pending_owner(&env)
     }
-
 
     /// Read-only: the current owner who proposed the pending ownership transfer.
     /// Returns `None` when no transfer has been proposed.
@@ -395,7 +379,6 @@ impl TokenVault {
         Ok(())
     }
 
-
     /// Lift the emergency pause, re-enabling all state-mutating operations.
     pub fn unpause(env: Env, caller: Address) -> Result<(), Error> {
         let owner = get_owner(&env).ok_or(Error::NotInitialized)?;
@@ -412,7 +395,6 @@ impl TokenVault {
         Ok(())
     }
 
-
     /// Permissionless keep-alive: extend the vault instance TTL so a paused
     /// vault can be kept warm during long investigations without requiring
     /// the owner to re-open the contract or submit a `RestoreFootprint`.
@@ -421,10 +403,8 @@ impl TokenVault {
         Ok(())
     }
 
-
     /// Read-only: whether the vault is currently under an emergency pause.
     pub fn is_paused(env: Env) -> bool {
         is_paused(&env)
     }
-
 }
