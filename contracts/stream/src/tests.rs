@@ -335,6 +335,7 @@ fn clawback_open_ended_refunds_unstreamed_remainder() {
         &now,
         &0, // open-ended — no end_time
         &true,
+        &2_592_000_u64,
     );
 
     // Advance 30 s → 3_000 stroops have accrued to the recipient.
@@ -405,6 +406,7 @@ fn clawback_open_ended_does_not_touch_accrued_funds() {
         &now,
         &0, // open-ended
         &true,
+        &2_592_000_u64,
     );
 
     // Advance 50 s → 5_000 stroops accrued.
