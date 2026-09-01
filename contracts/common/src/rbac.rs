@@ -254,3 +254,215 @@ pub fn require_role<RK: StorageKey>(
         Err(RbacError::NotAuthorized)
     }
 }
+
+// ── Unit tests ─────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use soroban_sdk::{contract, contractimpl, contracttype, testutils::Address as _, Address, Env};
+
+    #[contract]
+    struct TestRbacContract;
+
+    #[contractimpl]
+    impl TestRbacContract {
+        pub fn __constructor(_env: Env) {}
+    }
+
+    #[contracttype]
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    struct TestRoleKey {
+        role: u32,
+        account: Address,
+    }
+
+    #[contracttype]
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    struct TestAdminCountKey { _dummy: u32 }
+
+    #[contracttype]
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    struct TestMembersKey(u32);
+
+    fn setup() -> (Env, Address, TestAdminCountKey, TestMembersKey) {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, TestRbacContract);
+        let admin_count_key = TestAdminCountKey { _dummy: 0 };
+        let members_key = TestMembersKey(0);
+        (env, contract_id, admin_count_key, members_key)
+    }
+
+    #[test]
+    fn grant_adds_role_and_increments_admin_count() {
+        let (env, contract_id, admin_count_key, members_key) = setup();
+        let account = Address::generate(&env);
+        let role_key = TestRoleKey { role: 1, account: account.clone() };
+
+        env.as_contract(&contract_id, || {
+            let newly_granted = grant(&env, &role_key, &admin_count_key, &members_key, true, &account);
+            assert!(newly_granted);
+            assert_eq!(admin_count(&env, &admin_count_key), 1);
+            assert!(has_role(&env, &role_key));
+        });
+    }
+
+    #[test]
+    fn regrant_is_noop() {
+        let (env, contract_id, admin_count_key, members_key) = setup();
+        let account = Address::generate(&env);
+        let role_key = TestRoleKey { role: 1, account: account.clone() };
+
+        env.as_contract(&contract_id, || {
+            grant(&env, &role_key, &admin_count_key, &members_key, true, &account);
+            let newly_granted = grant(&env, &role_key, &admin_count_key, &members_key, true, &account);
+            assert!(!newly_granted);
+            assert_eq!(admin_count(&env, &admin_count_key), 1);
+        });
+    }
+
+    #[test]
+    fn revoke_removes_role_and_decrements_admin_count() {
+        let (env, contract_id, admin_count_key, members_key) = setup();
+        let a1 = Address::generate(&env);
+        let a2 = Address::generate(&env);
+        let role_key1 = TestRoleKey { role: 1, account: a1.clone() };
+        let role_key2 = TestRoleKey { role: 1, account: a2.clone() };
+
+        env.as_contract(&contract_id, || {
+            grant(&env, &role_key1, &admin_count_key, &members_key, true, &a1);
+            grant(&env, &role_key2, &admin_count_key, &members_key, true, &a2);
+            let removed = revoke(&env, &role_key1, &admin_count_key, &members_key, true, &a1);
+            assert_eq!(removed, Ok(true));
+            assert_eq!(admin_count(&env, &admin_count_key), 1);
+            assert!(!has_role(&env, &role_key1));
+        });
+    }
+
+    #[test]
+    fn revoke_last_admin_fails() {
+        let (env, contract_id, admin_count_key, members_key) = setup();
+        let account = Address::generate(&env);
+        let role_key = TestRoleKey { role: 1, account: account.clone() };
+
+        env.as_contract(&contract_id, || {
+            grant(&env, &role_key, &admin_count_key, &members_key, true, &account);
+            let result = revoke(&env, &role_key, &admin_count_key, &members_key, true, &account);
+            assert_eq!(result, Err(RbacError::LastAdmin));
+            assert_eq!(admin_count(&env, &admin_count_key), 1);
+        });
+    }
+
+    #[test]
+    fn revoke_nonexistent_role_returns_ok_false() {
+        let (env, contract_id, admin_count_key, members_key) = setup();
+        let account = Address::generate(&env);
+        let role_key = TestRoleKey { role: 1, account: account.clone() };
+
+        env.as_contract(&contract_id, || {
+            let result = revoke(&env, &role_key, &admin_count_key, &members_key, false, &account);
+            assert_eq!(result, Ok(false));
+        });
+    }
+
+    #[test]
+    fn role_members_tracks_grants_and_revokes() {
+        let (env, contract_id, admin_count_key, members_key) = setup();
+        let a1 = Address::generate(&env);
+        let a2 = Address::generate(&env);
+        let rk1 = TestRoleKey { role: 1, account: a1.clone() };
+        let rk2 = TestRoleKey { role: 1, account: a2.clone() };
+
+        env.as_contract(&contract_id, || {
+            grant(&env, &rk1, &admin_count_key, &members_key, false, &a1);
+            grant(&env, &rk2, &admin_count_key, &members_key, false, &a2);
+
+            let members = role_members(&env, &members_key);
+            assert_eq!(members.len(), 2);
+
+            revoke(&env, &rk1, &admin_count_key, &members_key, false, &a1).unwrap();
+            let members = role_members(&env, &members_key);
+            assert_eq!(members.len(), 1);
+            assert_eq!(members.get(0).unwrap(), a2);
+        });
+    }
+
+    #[test]
+    fn require_role_or_admin_allows_admin() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, TestRbacContract);
+        let admin = Address::generate(&env);
+        let admin_key = TestRoleKey { role: 0, account: admin.clone() };
+        let role_key = TestRoleKey { role: 1, account: admin.clone() };
+
+        env.as_contract(&contract_id, || {
+            env.storage().instance().set(&admin_key, &true);
+            let result = require_role_or_admin(&env, &admin, &role_key, &admin_key, None);
+            assert_eq!(result, Ok(()));
+        });
+    }
+
+    #[test]
+    fn require_role_or_admin_allows_role_holder() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, TestRbacContract);
+        let holder = Address::generate(&env);
+        let admin_key = TestRoleKey { role: 0, account: holder.clone() };
+        let role_key = TestRoleKey { role: 1, account: holder.clone() };
+
+        env.as_contract(&contract_id, || {
+            env.storage().instance().set(&role_key, &true);
+            let result = require_role_or_admin(&env, &holder, &role_key, &admin_key, None);
+            assert_eq!(result, Ok(()));
+        });
+    }
+
+    #[test]
+    fn require_role_or_admin_rejects_unauthorized() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, TestRbacContract);
+        let stranger = Address::generate(&env);
+        let admin_key = TestRoleKey { role: 0, account: stranger.clone() };
+        let role_key = TestRoleKey { role: 1, account: stranger.clone() };
+
+        env.as_contract(&contract_id, || {
+            let result = require_role_or_admin(&env, &stranger, &role_key, &admin_key, None);
+            assert_eq!(result, Err(RbacError::NotAuthorized));
+        });
+    }
+
+    #[test]
+    fn require_role_exact_allows_holder() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, TestRbacContract);
+        let holder = Address::generate(&env);
+        let role_key = TestRoleKey { role: 1, account: holder.clone() };
+
+        env.as_contract(&contract_id, || {
+            env.storage().instance().set(&role_key, &true);
+            let result = require_role(&env, &holder, &role_key, None);
+            assert_eq!(result, Ok(()));
+        });
+    }
+
+    #[test]
+    fn require_role_exact_rejects_admin_fallback() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, TestRbacContract);
+        let admin = Address::generate(&env);
+        let role_key = TestRoleKey { role: 1, account: admin.clone() };
+        let admin_key = TestRoleKey { role: 0, account: admin.clone() };
+
+        env.as_contract(&contract_id, || {
+            env.storage().instance().set(&admin_key, &true);
+            let result = require_role(&env, &admin, &role_key, None);
+            assert_eq!(result, Err(RbacError::NotAuthorized));
+        });
+    }
+}
