@@ -20,7 +20,7 @@ fn write_page(env: &Env, key: DataKey, page: &Vec<u64>) {
     extend_ttl(env, &key);
 }
 
-fn append_base(legacy_count: u32) -> u32 {
+pub(crate) fn append_base(legacy_count: u32) -> u32 {
     if legacy_count == 0 {
         0
     } else {
@@ -28,7 +28,7 @@ fn append_base(legacy_count: u32) -> u32 {
     }
 }
 
-fn logical_to_physical_offset(logical: u32, legacy_count: Option<u32>) -> u32 {
+pub(crate) fn logical_to_physical_offset(logical: u32, legacy_count: Option<u32>) -> u32 {
     match legacy_count {
         Some(legacy_count) if logical >= legacy_count => {
             append_base(legacy_count).saturating_add(logical - legacy_count)

@@ -621,3 +621,181 @@ fn append_refreshes_ttl_on_all_pages_not_just_newest() {
     });
     assert_eq!(count_remaining, ttl::EXTEND_TO);
 }
+
+
+
+
+// ── Issue #459: paged-index offset math invariants ──────────────────────────
+
+use crate::index::{append_base, logical_to_physical_offset};
+
+#[test]
+fn append_base_page_alignment() {
+    assert_eq!(append_base(0), 0);
+    assert_eq!(append_base(1), 100);
+    assert_eq!(append_base(99), 100);
+    assert_eq!(append_base(100), 100);
+    assert_eq!(append_base(101), 200);
+    assert_eq!(append_base(199), 200);
+    assert_eq!(append_base(200), 200);
+    assert_eq!(append_base(201), 300);
+    assert_eq!(append_base(999), 1000);
+    assert_eq!(append_base(1000), 1000);
+    assert_eq!(append_base(1001), 1100);
+}
+
+#[test]
+fn logical_to_physical_monotonicity() {
+    // For any fixed legacy_count, physical offset must be non-decreasing
+    // as logical increases.
+    let legacy_count = 50_u32;
+    let logicals = [0_u32, 25, 49, 50, 51, 100, 101];
+    let mut prev = 0_u32;
+    for (i, logical) in logicals.iter().enumerate() {
+        let physical = logical_to_physical_offset(*logical, Some(legacy_count));
+        if i > 0 {
+            assert!(
+                physical >= prev,
+                "legacy_count={}, logical={} -> physical={} (prev={}); monotonicity violated",
+                legacy_count, logical, physical, prev
+            );
+        }
+        prev = physical;
+    }
+
+    let legacy_count2 = 101_u32;
+    let logicals2 = [0_u32, 50, 100, 101, 102, 200, 201];
+    prev = 0;
+    for (i, logical) in logicals2.iter().enumerate() {
+        let physical = logical_to_physical_offset(*logical, Some(legacy_count2));
+        if i > 0 {
+            assert!(physical >= prev);
+        }
+        prev = physical;
+    }
+
+    let legacy_count3 = 1000_u32;
+    let logicals3 = [0_u32, 500, 999, 1000, 1001, 1100];
+    prev = 0;
+    for (i, logical) in logicals3.iter().enumerate() {
+        let physical = logical_to_physical_offset(*logical, Some(legacy_count3));
+        if i > 0 {
+            assert!(physical >= prev);
+        }
+        prev = physical;
+    }
+}
+
+#[test]
+fn logical_to_physical_range() {
+    let cases = [
+        (0_u32, 0_u32, 0_u32),
+        (0, 1, 1),
+        (0, 100, 100),
+        (1, 0, 0),
+        (1, 1, 100),
+        (1, 2, 101),
+        (50, 0, 0),
+        (50, 25, 25),
+        (50, 49, 49),
+        (50, 50, 100),
+        (50, 51, 101),
+        (100, 0, 0),
+        (100, 99, 99),
+        (100, 100, 100),
+        (100, 101, 101),
+        (101, 0, 0),
+        (101, 100, 100),
+        (101, 101, 200),
+        (101, 102, 201),
+    ];
+
+    for (legacy_count, logical, expected_physical) in cases {
+        let physical = logical_to_physical_offset(logical, Some(legacy_count));
+        assert!(
+            physical >= logical,
+            "legacy_count={}, logical={} -> physical={}; physical < logical",
+            legacy_count, logical, physical
+        );
+        assert_eq!(
+            physical, expected_physical,
+            "legacy_count={}, logical={}: expected {}, got {}",
+            legacy_count, logical, expected_physical, physical
+        );
+    }
+}
+
+#[test]
+fn logical_to_physical_identity_before_legacy_count() {
+    let legacy_counts = [1_u32, 50, 100, 101, 200, 999];
+    for legacy_count in legacy_counts {
+        for logical in 0..legacy_count {
+            let physical = logical_to_physical_offset(logical, Some(legacy_count));
+            assert_eq!(
+                physical, logical,
+                "legacy_count={}, logical={}: expected identity mapping",
+                legacy_count, logical
+            );
+        }
+    }
+}
+
+#[test]
+fn logical_to_physical_boundary_crossing() {
+    // At the exact boundary logical == legacy_count, physical should jump
+    // from legacy_count - 1 to append_base(legacy_count).
+    let cases = [
+        (1_u32, 0_u32, 100_u32),
+        (50, 49, 100),
+        (100, 99, 100),
+        (101, 100, 200),
+        (200, 199, 200),
+    ];
+
+    for (legacy_count, logical_before, expected_after) in cases {
+        let physical_before = logical_to_physical_offset(logical_before, Some(legacy_count));
+        assert_eq!(physical_before, logical_before, "identity before boundary");
+
+        let physical_after = logical_to_physical_offset(logical_before + 1, Some(legacy_count));
+        assert_eq!(
+            physical_after, expected_after,
+            "legacy_count={}, logical={}: expected jump to append_base",
+            legacy_count, logical_before + 1
+        );
+    }
+}
+
+#[test]
+
+#[test]
+fn page_boundary_consistency() {
+    const PAGE_SIZE: u32 = 100;
+    let cases = [
+        (0_u32, 0_u32),
+        (0, 50),
+        (0, 100),
+        (50, 0),
+        (50, 49),
+        (50, 50),
+        (100, 0),
+        (100, 99),
+        (100, 100),
+        (101, 100),
+        (101, 101),
+        (200, 150),
+        (200, 200),
+        (999, 1000),
+    ];
+
+    for (legacy_count, logical) in cases {
+        let physical = logical_to_physical_offset(logical, Some(legacy_count));
+        let page_index = physical / PAGE_SIZE;
+        let page_offset = physical % PAGE_SIZE;
+        assert_eq!(
+            page_index * PAGE_SIZE + page_offset,
+            physical,
+            "legacy_count={}, logical={}: page decomposition inconsistent",
+            legacy_count, logical
+        );
+    }
+}
