@@ -159,6 +159,35 @@ fn withdrawable_stops_at_end_time() {
     assert_eq!(s.client.withdrawable(), 10_000);
 }
 
+#[test]
+fn transfer_recipient_rejects_zero_address() {
+    let s = Setup::new(100, 3600, false);
+    let zero = Address::from_string(&soroban_sdk::String::from_str(
+        &s.env,
+        "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+    ));
+
+    let result = s.client.try_transfer_recipient(&zero);
+    assert_eq!(result, Err(Ok(Error::InvalidRecipient)));
+}
+
+#[test]
+fn transfer_recipient_rejects_same_recipient() {
+    let s = Setup::new(100, 3600, false);
+
+    let result = s.client.try_transfer_recipient(&s.recipient);
+    assert_eq!(result, Err(Ok(Error::InvalidRecipient)));
+}
+
+#[test]
+fn transfer_recipient_rejects_ended_stream() {
+    let s = Setup::new(100, 100, false);
+    s.advance_secs(200);
+
+    let result = s.client.try_transfer_recipient(&Address::generate(&s.env));
+    assert_eq!(result, Err(Ok(Error::StreamEnded)));
+}
+
 // ── Pause / Resume ────────────────────────────────────────────────────────────
 
 #[test]
