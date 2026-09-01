@@ -121,6 +121,15 @@ pub struct OracleConfig {
     /// would otherwise corrupt the TWAP median until enough correct
     /// observations roll it out — see issue #226.
     pub max_price: u64,
+    /// Minimum number of seconds a feeder must wait between their own
+    /// consecutive submissions. A feeder whose real price feed has gone stale
+    /// would otherwise be able to re-submit the *same* number repeatedly,
+    /// keeping `updated_at` fresh and defeating per-feeder staleness protection
+    /// (issue #390). Set to `0` to disable rate-limiting. When non-zero,
+    /// `submit_price` rejects a call from `caller` that arrives less than
+    /// `min_submit_interval` seconds after that feeder's last accepted
+    /// submission, returning [`Error::SubmitTooSoon`].
+    pub min_submit_interval: u64,
 }
 
 #[contracttype]
@@ -192,6 +201,11 @@ pub enum Error {
     TooManySubmitters = 1016,
     /// Submitted price exceeds the configured `max_price` ceiling.
     PriceExceedsMaxPrice = 1017,
+    /// A feeder tried to submit again before `min_submit_interval` seconds
+    /// have elapsed since their last accepted submission. Prevents cheap
+    /// spam-refreshes of `updated_at` that defeat per-feeder staleness
+    /// detection (issue #390).
+    SubmitTooSoon = 1018,
 }
 
 #[contract]
@@ -430,6 +444,8 @@ impl TwapOracle {
         // oracle has not been configured yet there is no ceiling to enforce
         // (identical to `max_price == 0`), so submission is not blocked — see
         // issue #226.
+        let now = env.ledger().timestamp();
+
         if let Some(config) = env
             .storage()
             .instance()
@@ -438,9 +454,24 @@ impl TwapOracle {
             if config.max_price != 0 && price > config.max_price {
                 return Err(Error::PriceExceedsMaxPrice);
             }
-        }
 
-        let now = env.ledger().timestamp();
+            // Rate-limit: reject a re-submission from this feeder if it arrives
+            // before `min_submit_interval` seconds have elapsed since their last
+            // accepted submission. A zero interval disables rate-limiting. This
+            // prevents a stale feeder from keeping `updated_at` artificially
+            // fresh by re-submitting the same price repeatedly (issue #390).
+            if config.min_submit_interval > 0 {
+                if let Some(last) = env
+                    .storage()
+                    .persistent()
+                    .get::<_, PriceData>(&DataKey::Submission(caller.clone()))
+                {
+                    if now.saturating_sub(last.updated_at) < config.min_submit_interval {
+                        return Err(Error::SubmitTooSoon);
+                    }
+                }
+            }
+        }
         let data = PriceData {
             price,
             updated_at: now,
@@ -1074,6 +1105,7 @@ mod tests {
             asset_peg: 1,
             max_staleness: 300,
             max_price: 0,
+            min_submit_interval: 0,
         };
         client.configure_oracle(&admin, &config);
 
@@ -1092,6 +1124,7 @@ mod tests {
             asset_peg: 1,
             max_staleness: 300,
             max_price: 0,
+            min_submit_interval: 0,
         };
         let result = client.try_configure_oracle(&admin, &config);
         assert_eq!(result, Err(Ok(Error::InvalidDecimals)));
@@ -1107,6 +1140,7 @@ mod tests {
             asset_peg: 1,
             max_staleness: 0,
             max_price: 0,
+            min_submit_interval: 0,
         };
         let result = client.try_configure_oracle(&admin, &config);
         assert_eq!(result, Err(Ok(Error::InvalidMaxStaleness)));
@@ -1184,6 +1218,7 @@ mod tests {
             asset_peg: 1,
             max_staleness: 300,
             max_price: 1_000_000_000_000_000_000,
+            min_submit_interval: 0,
         };
         client.configure_oracle(&admin, &config);
 
@@ -1210,6 +1245,7 @@ mod tests {
             asset_peg: 1,
             max_staleness: 300,
             max_price: 1_000_000_000_000_000_000,
+            min_submit_interval: 0,
         };
         client.configure_oracle(&admin, &config);
 
@@ -1233,6 +1269,7 @@ mod tests {
             asset_peg: 1,
             max_staleness: 300,
             max_price: 0,
+            min_submit_interval: 0,
         };
         client.configure_oracle(&admin, &config);
 
@@ -1270,6 +1307,7 @@ mod tests {
             asset_peg: 1,
             max_staleness: 300,
             max_price: 0,
+            min_submit_interval: 0,
         };
         client.configure_oracle(&admin, &config);
 
@@ -1288,6 +1326,7 @@ mod tests {
             asset_peg: 1,
             max_staleness: 60,
             max_price: 0,
+            min_submit_interval: 0,
         };
         client.configure_oracle(&admin, &config);
 
@@ -1319,6 +1358,7 @@ mod tests {
             asset_peg: 1,
             max_staleness: 300,
             max_price: 0,
+            min_submit_interval: 0,
         };
         client.configure_oracle(&admin, &config);
 
@@ -1339,6 +1379,7 @@ mod tests {
             asset_peg: 1,
             max_staleness: 300,
             max_price: 0,
+            min_submit_interval: 0,
         };
         client.configure_oracle(&admin, &config);
 
@@ -1359,6 +1400,7 @@ mod tests {
             asset_peg: 1,
             max_staleness: 300,
             max_price: 0,
+            min_submit_interval: 0,
         };
         client.configure_oracle(&admin, &config);
 
@@ -1379,6 +1421,7 @@ mod tests {
             asset_peg: 1,
             max_staleness: 300,
             max_price: 0,
+            min_submit_interval: 0,
         };
         client.configure_oracle(&admin, &config);
         client.submit_price(&admin, &50_000_000);
@@ -1467,6 +1510,7 @@ mod tests {
             asset_peg: 1,
             max_staleness: 300,
             max_price: 0,
+            min_submit_interval: 0,
         };
         client.configure_oracle(&admin, &config);
         client.submit_price(&admin, &50_000_000);
@@ -1519,6 +1563,7 @@ mod tests {
             asset_peg: 1,
             max_staleness: 300,
             max_price: 0,
+            min_submit_interval: 0,
         };
         client.configure_oracle(&admin, &config);
         client.submit_price(&admin, &50_000_000);
@@ -1731,6 +1776,7 @@ mod tests {
             asset_peg: 1,
             max_staleness: 300,
             max_price: 0,
+            min_submit_interval: 0,
         };
         let result = client.try_configure_oracle(&admin, &config);
         assert_eq!(result, Err(Ok(Error::NotAuthorized)));
@@ -1750,6 +1796,7 @@ mod tests {
             asset_peg: 1,
             max_staleness: 300,
             max_price: 0,
+            min_submit_interval: 0,
         };
         client.configure_oracle(&admin, &config);
 
@@ -1777,6 +1824,7 @@ mod tests {
             asset_peg: 1,
             max_staleness: 300,
             max_price: 0,
+            min_submit_interval: 0,
         };
         client.configure_oracle(&admin, &config);
 
@@ -1801,6 +1849,7 @@ mod tests {
             asset_peg: 1,
             max_staleness: 60,
             max_price: 0,
+            min_submit_interval: 0,
         };
         client.configure_oracle(&admin, &config);
 
@@ -1838,6 +1887,7 @@ mod tests {
             asset_peg: 1,
             max_staleness: 60,
             max_price: 0,
+            min_submit_interval: 0,
         };
         client.configure_oracle(&admin, &config);
 
@@ -1872,6 +1922,7 @@ mod tests {
             asset_peg: 1,
             max_staleness: 300,
             max_price: 0,
+            min_submit_interval: 0,
         };
         client.configure_oracle(&admin, &config);
         client.submit_price(&admin, &50_000_000);
@@ -1910,6 +1961,7 @@ mod tests {
             asset_peg: 1,
             max_staleness: 300,
             max_price: 0,
+            min_submit_interval: 0,
         };
         client.configure_oracle(&admin, &config);
 
@@ -1928,6 +1980,7 @@ mod tests {
             asset_peg: 1,
             max_staleness: 60,
             max_price: 0,
+            min_submit_interval: 0,
         };
         client.configure_oracle(&admin, &config);
         client.submit_price(&admin, &50_000_000);
@@ -1966,6 +2019,7 @@ mod tests {
             asset_peg: 1,
             max_staleness: 300,
             max_price: 0,
+            min_submit_interval: 0,
         };
         client.configure_oracle(&admin, &config);
 
@@ -1983,6 +2037,7 @@ mod tests {
             asset_peg: 1,
             max_staleness: 300,
             max_price: 0,
+            min_submit_interval: 0,
         };
         client.configure_oracle(&admin, &config);
 
@@ -2029,6 +2084,7 @@ mod tests {
             asset_peg: 1,
             max_staleness: 300,
             max_price: 0,
+            min_submit_interval: 0,
         };
         client.configure_oracle(&admin, &config);
 
@@ -2077,6 +2133,7 @@ mod tests {
             asset_peg: 1,
             max_staleness: 300,
             max_price: 0,
+            min_submit_interval: 0,
         };
         client.configure_oracle(&admin, &config);
 
@@ -2127,6 +2184,7 @@ mod tests {
             asset_peg: 1,
             max_staleness: 300,
             max_price: 0,
+            min_submit_interval: 0,
         };
         client.configure_oracle(&admin, &config);
 
@@ -2158,6 +2216,7 @@ mod tests {
             asset_peg: 1,
             max_staleness: 300,
             max_price: 0,
+            min_submit_interval: 0,
         };
         client.configure_oracle(&admin, &config);
         client.submit_price(&admin, &50_000_000);
@@ -2170,6 +2229,7 @@ mod tests {
             asset_peg: 1,
             max_staleness: 300,
             max_price: 0,
+            min_submit_interval: 0,
         };
         client.configure_oracle(&admin, &new_config);
 
@@ -2188,6 +2248,7 @@ mod tests {
             asset_peg: 1,
             max_staleness: 300,
             max_price: 0,
+            min_submit_interval: 0,
         };
         client.configure_oracle(&admin, &config);
         client.submit_price(&admin, &50_000_000);
@@ -2200,6 +2261,7 @@ mod tests {
             asset_peg: 2,
             max_staleness: 300,
             max_price: 0,
+            min_submit_interval: 0,
         };
         client.configure_oracle(&admin, &new_config);
 
@@ -2218,6 +2280,7 @@ mod tests {
             asset_peg: 1,
             max_staleness: 300,
             max_price: 0,
+            min_submit_interval: 0,
         };
         client.configure_oracle(&admin, &config);
         client.submit_price(&admin, &50_000_000);
@@ -2230,6 +2293,7 @@ mod tests {
             asset_peg: 1,
             max_staleness: 600,
             max_price: 0,
+            min_submit_interval: 0,
         };
         client.configure_oracle(&admin, &new_config);
 
@@ -2249,6 +2313,7 @@ mod tests {
             asset_peg: 1,
             max_staleness: 300,
             max_price: 0,
+            min_submit_interval: 0,
         };
         client.configure_oracle(&admin, &config);
 
@@ -2288,6 +2353,7 @@ mod tests {
             asset_peg: 1,
             max_staleness: 300,
             max_price: 0,
+            min_submit_interval: 0,
         };
         client.configure_oracle(&admin, &config);
 
@@ -2312,6 +2378,7 @@ mod tests {
             asset_peg: 1,
             max_staleness: 300,
             max_price: 0,
+            min_submit_interval: 0,
         };
         client.configure_oracle(&admin, &config);
 
@@ -2346,6 +2413,7 @@ mod tests {
             asset_peg: 1,
             max_staleness: 300,
             max_price: 0,
+            min_submit_interval: 0,
         };
         client.configure_oracle(&admin, &config);
 
@@ -2365,5 +2433,172 @@ mod tests {
         client.grant_role(&admin, &Role::PriceFeeder, &f1);
         client.submit_price(&f1, &250_000_000);
         assert_eq!(client.get_twap_price(), 250_000_000);
+    }
+
+    #[test]
+    fn submit_price_rejected_before_min_submit_interval_elapses() {
+        let (env, client, admin) = setup();
+        client.initialize(&admin);
+
+        let config = OracleConfig {
+            decimals: 8,
+            asset_peg: 1,
+            max_staleness: 300,
+            max_price: 0,
+            min_submit_interval: 60, // feeder must wait 60 s between submissions
+        };
+        client.configure_oracle(&admin, &config);
+
+        let feeder = Address::generate(&env);
+        client.grant_role(&admin, &Role::PriceFeeder, &feeder);
+
+        // First submission always succeeds (no prior entry for this feeder).
+        client.submit_price(&feeder, &100_000_000);
+
+        // Immediate re-submission within the interval must be rejected.
+        let result = client.try_submit_price(&feeder, &100_000_000);
+        assert_eq!(result, Err(Ok(Error::SubmitTooSoon)));
+
+        // Advance ledger time by less than the interval — still rejected.
+        let submitted_at = env.ledger().timestamp();
+        env.ledger().set(LedgerInfo {
+            timestamp: submitted_at + 59,
+            protocol_version: 21,
+            sequence_number: 1,
+            network_id: Default::default(),
+            base_reserve: 10,
+            min_temp_entry_ttl: 16,
+            min_persistent_entry_ttl: 4096,
+            max_entry_ttl: 6_312_000,
+        });
+        let result = client.try_submit_price(&feeder, &100_000_001);
+        assert_eq!(result, Err(Ok(Error::SubmitTooSoon)));
+    }
+
+    #[test]
+    fn submit_price_allowed_after_min_submit_interval_elapses() {
+        let (env, client, admin) = setup();
+        client.initialize(&admin);
+
+        let config = OracleConfig {
+            decimals: 8,
+            asset_peg: 1,
+            max_staleness: 300,
+            max_price: 0,
+            min_submit_interval: 60,
+        };
+        client.configure_oracle(&admin, &config);
+
+        let feeder = Address::generate(&env);
+        client.grant_role(&admin, &Role::PriceFeeder, &feeder);
+
+        client.submit_price(&feeder, &100_000_000);
+        let submitted_at = env.ledger().timestamp();
+
+        // Advance exactly to the interval boundary — should be allowed.
+        env.ledger().set(LedgerInfo {
+            timestamp: submitted_at + 60,
+            protocol_version: 21,
+            sequence_number: 1,
+            network_id: Default::default(),
+            base_reserve: 10,
+            min_temp_entry_ttl: 16,
+            min_persistent_entry_ttl: 4096,
+            max_entry_ttl: 6_312_000,
+        });
+        let result = client.try_submit_price(&feeder, &200_000_000);
+        assert!(
+            result.is_ok(),
+            "submit after exactly min_submit_interval must succeed"
+        );
+
+        // Updated price is now reflected in the TWAP.
+        assert_eq!(client.get_twap_price(), 200_000_000);
+    }
+
+    #[test]
+    fn submit_price_zero_interval_disables_rate_limiting() {
+        let (_env, client, admin) = setup();
+        client.initialize(&admin);
+
+        let config = OracleConfig {
+            decimals: 8,
+            asset_peg: 1,
+            max_staleness: 300,
+            max_price: 0,
+            min_submit_interval: 0, // rate-limiting disabled
+        };
+        client.configure_oracle(&admin, &config);
+
+        let feeder = Address::generate(&_env);
+        client.grant_role(&admin, &Role::PriceFeeder, &feeder);
+
+        // Rapid back-to-back submissions must all succeed when interval == 0.
+        client.submit_price(&feeder, &100_000_000);
+        client.submit_price(&feeder, &110_000_000);
+        client.submit_price(&feeder, &120_000_000);
+
+        // Latest price wins.
+        assert_eq!(client.get_twap_price(), 120_000_000);
+    }
+
+    #[test]
+    fn min_submit_interval_is_per_feeder_not_global() {
+        let (env, client, admin) = setup();
+        client.initialize(&admin);
+
+        let config = OracleConfig {
+            decimals: 8,
+            asset_peg: 1,
+            max_staleness: 300,
+            max_price: 0,
+            min_submit_interval: 60,
+        };
+        client.configure_oracle(&admin, &config);
+
+        let f1 = Address::generate(&env);
+        let f2 = Address::generate(&env);
+        client.grant_role(&admin, &Role::PriceFeeder, &f1);
+        client.grant_role(&admin, &Role::PriceFeeder, &f2);
+
+        // f1 submits.
+        client.submit_price(&f1, &100_000_000);
+
+        // f1 is rate-limited, but f2 (who hasn't submitted before) must succeed
+        // regardless — the cooldown is per-feeder, not global.
+        let result = client.try_submit_price(&f2, &200_000_000);
+        assert!(
+            result.is_ok(),
+            "a different feeder must not be rate-limited by f1's submission"
+        );
+
+        // f1 is still blocked.
+        let result = client.try_submit_price(&f1, &100_000_001);
+        assert_eq!(result, Err(Ok(Error::SubmitTooSoon)));
+    }
+
+    #[test]
+    fn first_submission_always_succeeds_regardless_of_interval() {
+        let (_env, client, admin) = setup();
+        client.initialize(&admin);
+
+        let config = OracleConfig {
+            decimals: 8,
+            asset_peg: 1,
+            max_staleness: 300,
+            max_price: 0,
+            min_submit_interval: 3600, // very long interval
+        };
+        client.configure_oracle(&admin, &config);
+
+        let feeder = Address::generate(&_env);
+        client.grant_role(&admin, &Role::PriceFeeder, &feeder);
+
+        // No prior submission exists — should always be allowed.
+        let result = client.try_submit_price(&feeder, &100_000_000);
+        assert!(
+            result.is_ok(),
+            "first-ever submission must bypass the interval check"
+        );
     }
 }
