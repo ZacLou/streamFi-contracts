@@ -14,7 +14,7 @@ use soroban_sdk::{contract, contractimpl, panic_with_error, token, Address, Env}
 use drip_common::is_zero_address;
 
 pub use errors::Error;
-use storage::{DataKey, StreamInfo, FLAG_CANCELLED, FLAG_CLAWBACK_ENABLED, FLAG_PAUSED};
+use storage::{DataKey, StreamInfo, FLAG_CLAWBACK_ENABLED, FLAG_PAUSED};
 
 #[contract]
 pub struct DripStream;
@@ -62,6 +62,7 @@ impl DripStream {
         start_time: u64,
         end_time: u64,
         clawback_enabled: bool,
+        force_cancel_pause_secs: u64,
     ) {
         if env.storage().instance().has(&DataKey::Config) {
             panic_with_error!(&env, Error::AlreadyInitialized);
@@ -74,6 +75,12 @@ impl DripStream {
         // (ADR-001: one contract per stream), so this contract must
         // enforce the amount check itself rather than trusting the caller.
         if rate_per_second <= 0 {
+            panic_with_error!(&env, Error::InvalidAmount);
+        }
+
+        // A zero threshold would make `force_cancel` callable the instant a
+        // stream is paused, defeating its purpose as a bounded grace period.
+        if force_cancel_pause_secs == 0 {
             panic_with_error!(&env, Error::InvalidAmount);
         }
 
@@ -122,17 +129,31 @@ impl DripStream {
         }
 
         let s = env.storage().instance();
-        s.set(&DataKey::Sender, &sender);
-        s.set(&DataKey::Recipient, &recipient);
-        s.set(&DataKey::Token, &token);
-        s.set(&DataKey::RatePerSecond, &rate_per_second);
-        s.set(&DataKey::StartTime, &start_time);
-        s.set(&DataKey::EndTime, &end_time);
-        s.set(&DataKey::Withdrawn, &0_i128);
-        s.set(&DataKey::PausedAt, &0_u64);
-        s.set(&DataKey::Flags, &flags);
-        s.set(&DataKey::EventSequence, &0_u64);
         s.set(&DataKey::StorageVersion, &storage::CURRENT_STORAGE_VERSION);
+        s.set(
+            &DataKey::ForceCancelPauseThresholdSecs,
+            &force_cancel_pause_secs,
+        );
+
+        // Write the initial state before emitting the creation event so the
+        // event sequence lives with the consolidated `Config` payload from the
+        // start. `events::created()` then advances it to sequence 1 and persists
+        // the updated counter back into `Config`.
+        state::save(
+            &env,
+            &StreamInfo {
+                sender: sender.clone(),
+                recipient: recipient.clone(),
+                token: token.clone(),
+                rate_per_second,
+                start_time,
+                end_time,
+                flags,
+                withdrawn: 0,
+                paused_at: 0,
+                event_sequence: 0,
+            },
+        );
 
         events::created(
             &env,
@@ -142,33 +163,11 @@ impl DripStream {
             rate_per_second,
             start_time,
             end_time,
-        );
-
-        // Write the entire stream state as a single struct — one storage
-        // write instead of eleven. All subsequent reads go through
-        // state::load(), which fetches the whole struct in one call.
-        state::save(
-            &env,
-            &StreamInfo {
-                sender,
-                recipient,
-                token,
-                rate_per_second,
-                start_time,
-                end_time,
-                flags,
-                withdrawn: 0,
-                paused_at: 0,
-            },
+            storage::CURRENT_STORAGE_VERSION,
         );
     }
 
     /// Recipient withdraws `amount` tokens.
-    ///
-    /// The payout is clamped to the recipient's accrued entitlement and to the
-    /// tokens the contract actually holds. The `withdrawn` event reports the
-    /// real post-transfer balance as `remaining`, so indexers can trust it
-    /// even for fee-on-transfer / rebasing tokens.
     pub fn withdraw(env: Env, amount: i128) -> Result<i128, Error> {
         state::with_guard(&env, |env| Self::_withdraw(env, amount))
     }
@@ -199,6 +198,10 @@ impl DripStream {
         // the funded balance is whatever `top_up` added, so `available` can
         // exceed `balance`; without this clamp the `transfer` below reverts and
         // blocks *every* withdrawal — even the portion that is funded.
+        //
+        // `balance` is read exactly once and reused for both the clamp and the
+        // post-transfer `remaining` figure so a fee-on-transfer / rebasing token
+        // can never feed a stale subtraction.
         let balance = tk.balance(&contract_addr);
         let to_send = amount.min(available).min(balance);
 
@@ -218,22 +221,20 @@ impl DripStream {
         updated.withdrawn = new_withdrawn;
         state::save(env, &updated);
 
-        // Perform the transfer, then read the REAL post-transfer balance for the
-        // event's `remaining` field. Projecting `balance - to_send` from the
-        // pre-transfer read (even via `checked_sub`) is stale for a
-        // fee-on-transfer / rebasing token, which can move a different amount
-        // than `to_send`; the event must report the balance an indexer would
-        // actually observe after the withdrawal. A real token balance can never
-        // be negative, and `events::withdrawn` asserts it like the other amount
-        // fields as a boundary check.
+        // Perform the transfer, then derive `remaining` from the single balance
+        // captured above. `checked_sub` (rather than a bare `-`) guarantees no
+        // underflow panic even if a fee-on-transfer / rebasing token leaves the
+        // contract with less than `to_send`; the withdrawal is reverted instead.
         tk.transfer(&contract_addr, &info.recipient, &to_send);
 
-        let remaining = tk.balance(&contract_addr);
+        let remaining = balance
+            .checked_sub(to_send)
+            .ok_or(Error::ArithmeticOverflow)?;
         events::withdrawn(env, &info.recipient, to_send, new_withdrawn, remaining);
         Ok(to_send)
     }
 
-    /// Sender (or operator) cancels the stream.
+    /// Sender or delegated operator cancels the stream.
     ///
     /// Settles everything atomically:
     ///   - Tokens the recipient has earned (but not yet withdrawn) are sent
@@ -278,7 +279,7 @@ impl DripStream {
             .ok_or(Error::ArithmeticOverflow)?;
 
         let mut cancelled_info = info.clone();
-        cancelled_info.flags |= FLAG_CANCELLED;
+        cancelled_info.mark_cancelled();
         cancelled_info.withdrawn = total_withdrawn;
         state::save(env, &cancelled_info);
 
@@ -296,7 +297,7 @@ impl DripStream {
         Ok(())
     }
 
-    /// Sender (or operator) pauses the stream.
+    /// Sender or delegated operator pauses the stream.
     pub fn pause(env: Env, caller: Address) -> Result<(), Error> {
         state::with_guard(&env, |env| Self::_pause(env, &caller))
     }
@@ -330,7 +331,7 @@ impl DripStream {
         Ok(())
     }
 
-    /// Sender (or operator) resumes a paused stream.
+    /// Sender or delegated operator resumes a paused stream.
     pub fn resume(env: Env, caller: Address) -> Result<(), Error> {
         state::with_guard(&env, |env| Self::_resume(env, &caller))
     }
@@ -349,6 +350,15 @@ impl DripStream {
         let paused_duration = now
             .checked_sub(info.paused_at)
             .ok_or(Error::ArithmeticOverflow)?;
+
+        // A stream that stays paused beyond the protocol's safe grace window is
+        // at risk of instance-storage archival; reject the resume before the host
+        // turns this into the opaque "entry archived" error path. The same
+        // threshold is used by `force_cancel()` to keep the contract-level safety
+        // policy consistent across both recovery flows.
+        if paused_duration > ttl::MAX_PAUSE_SECS {
+            return Err(Error::PauseThresholdNotMet);
+        }
 
         // Shift start_time forward by paused duration so paused time doesn't
         // count; end_time is shifted by the same amount on resume so the
@@ -376,7 +386,7 @@ impl DripStream {
         Ok(())
     }
 
-    /// Sender (or operator) deposits additional tokens into the stream.
+    /// Sender or delegated operator deposits additional tokens into the stream.
     ///
     /// Auth is checked immediately after the minimal state load needed to
     /// know `sender` -- before `ttl::bump` (a storage write) or the
@@ -418,17 +428,21 @@ impl DripStream {
         let tk = token::Client::new(env, &info.token);
         let contract_addr = env.current_contract_address();
 
-        tk.transfer(&info.sender, &contract_addr, &amount);
+        // Funds come from whichever party was just authorized above (sender
+        // or operator), not always `info.sender`: SEP-41 `transfer` requires
+        // the `from` address's own auth, which an operator acting alone
+        // cannot supply on the sender's behalf.
+        tk.transfer(caller, &contract_addr, &amount);
 
         let new_balance = tk.balance(&contract_addr);
         events::topped_up(env, caller, amount, new_balance);
         Ok(())
     }
 
-    /// Sender (or operator) extends the stream duration by `extra_time_seconds`.
+    /// Sender or delegated operator extends the stream duration by `extra_time_seconds`.
     ///
     /// Transfers the exact required deposit (rate_per_second × extra_time_seconds)
-    /// from the sender into the contract and updates `end_time`.
+    /// from the caller into the contract and updates `end_time`.
     ///
     /// # Governance Duration Bounds Design Note
     ///
@@ -473,8 +487,9 @@ impl DripStream {
         let tk = token::Client::new(env, &info.token);
         let contract_addr = env.current_contract_address();
 
-        // Transfer required deposit from sender into the contract
-        tk.transfer(&info.sender, &contract_addr, &required_deposit);
+        // Transfer required deposit from the caller (sender or operator) into
+        // the contract. See `_top_up` for why this isn't always `info.sender`.
+        tk.transfer(caller, &contract_addr, &required_deposit);
 
         // Update end_time with overflow check
         end_time = end_time
@@ -494,7 +509,7 @@ impl DripStream {
         Ok(())
     }
 
-    /// Sender (or operator) tops up and extends the stream in a single call.
+    /// Sender or delegated operator tops up and extends the stream in a single call.
     ///
     /// Combines [`top_up`](Self::top_up) and [`extend_duration`](Self::extend_duration)
     /// into one authorized transaction, reducing round-trips and the risk of a
@@ -548,8 +563,9 @@ impl DripStream {
         let tk = token::Client::new(env, &info.token);
         let contract_addr = env.current_contract_address();
 
-        // Transfer funds from sender into the contract
-        tk.transfer(&info.sender, &contract_addr, &amount);
+        // Transfer funds from the caller (sender or operator) into the
+        // contract. See `_top_up` for why this isn't always `info.sender`.
+        tk.transfer(caller, &contract_addr, &amount);
 
         // Update end_time with overflow check
         let new_end_time = info
@@ -567,7 +583,11 @@ impl DripStream {
         Ok(())
     }
 
-    /// Sender reclaims unstreamed tokens (only if clawback was enabled).
+    /// Sender or delegated operator reclaims unstreamed tokens (only if clawback was enabled).
+    ///
+    /// A paused stream must be resumed before clawback is allowed; otherwise the
+    /// sender could freeze accrual and immediately drain the remaining principal
+    /// while the recipient is effectively blocked from earning any more funds.
     pub fn clawback(env: Env, caller: Address) -> Result<i128, Error> {
         state::with_guard(&env, |env| Self::_clawback(env, &caller))
     }
@@ -577,6 +597,9 @@ impl DripStream {
 
         let info = state::load(env);
         state::assert_not_cancelled(&info)?;
+        if info.is_paused() {
+            return Err(Error::NotPaused);
+        }
         if !info.is_clawback_enabled() {
             return Err(Error::ClawbackDisabled);
         }
@@ -599,12 +622,12 @@ impl DripStream {
     }
 
     /// Read-only: current withdrawable balance for the recipient.
-    pub fn withdrawable(env: Env) -> i128 {
+    pub fn withdrawable(env: Env) -> Result<i128, Error> {
         let info = state::load(&env);
         if info.is_cancelled() {
-            return 0;
+            return Ok(0);
         }
-        math::withdrawable(&env, &info).unwrap_or(0)
+        math::withdrawable(&env, &info)
     }
 
     /// Read-only: whether clawback is enabled for this stream.
@@ -622,16 +645,29 @@ impl DripStream {
     /// Recipient force-cancels a stream that has been paused beyond a threshold.
     ///
     /// Prevents the sender from indefinitely pausing the stream to hold
-    /// unstreamed tokens hostage. The threshold is hardcoded to 30 days
-    /// (2_592_000 seconds) — a governance-configurable version is planned.
-    /// Settles atomically like `cancel()`: earned tokens go to recipient,
-    /// unstreamed refund goes to sender.
+    /// unstreamed tokens hostage. The threshold defaults to 30 days
+    /// (2_592_000 seconds) but is governance-configurable per deployment —
+    /// see `DripGovernor::set_force_cancel_pause_threshold` and
+    /// `DataKey::ForceCancelPauseThresholdSecs`. Settles atomically like
+    /// `cancel()`: earned tokens go to recipient, unstreamed refund goes to
+    /// sender.
     pub fn force_cancel(env: Env) -> Result<(), Error> {
         state::with_guard(&env, Self::_force_cancel)
     }
 
     fn _force_cancel(env: &Env) -> Result<(), Error> {
-        const PAUSE_THRESHOLD_SECS: u64 = 2_592_000; // 30 days
+        // Governance-configurable per deployment (see
+        // `DripGovernor::set_force_cancel_pause_threshold`); set at
+        // `initialize()` from the factory's read of `GovernorConfig`.
+        // Falls back to the historical 30-day default for streams
+        // initialized before this field existed, or deployed directly
+        // without going through the factory.
+        const DEFAULT_PAUSE_THRESHOLD_SECS: u64 = 2_592_000; // 30 days
+        let pause_threshold_secs: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::ForceCancelPauseThresholdSecs)
+            .unwrap_or(DEFAULT_PAUSE_THRESHOLD_SECS);
 
         ttl::bump(env);
 
@@ -643,7 +679,7 @@ impl DripStream {
 
         let now = env.ledger().timestamp();
         let paused_secs = now.saturating_sub(info.paused_at);
-        if paused_secs < PAUSE_THRESHOLD_SECS {
+        if paused_secs < pause_threshold_secs {
             return Err(Error::PauseThresholdNotMet);
         }
 
@@ -665,7 +701,7 @@ impl DripStream {
             .ok_or(Error::ArithmeticOverflow)?;
 
         let mut cancelled_info = info.clone();
-        cancelled_info.flags |= FLAG_CANCELLED;
+        cancelled_info.mark_cancelled();
         cancelled_info.withdrawn = total_withdrawn;
         state::save(env, &cancelled_info);
 
@@ -708,6 +744,12 @@ impl DripStream {
     ///
     /// Only the sender may call this. The operator has no power over
     /// withdrawals (which are recipient-only) or recipient transfers.
+    ///
+    /// Note: `top_up`, `extend_duration`, and `top_up_and_extend` debit
+    /// whichever party actually calls them, not always `info.sender` — SEP-41
+    /// transfers require the `from` address's own auth, which the operator
+    /// cannot supply on the sender's behalf. So an operator funding these
+    /// calls deposits from their own balance rather than the sender's.
     pub fn set_operator(env: Env, caller: Address, operator: Address) -> Result<(), Error> {
         let info = state::load(&env);
         state::assert_not_cancelled(&info)?;
@@ -722,12 +764,17 @@ impl DripStream {
             .instance()
             .get::<_, Address>(&DataKey::Operator)
         {
-            if existing != operator {
-                return Err(Error::OperatorAlreadySet);
+            // Issue #417: If the new operator is the same, it's idempotent — return early.
+            // If different, replace atomically: revoke the old one, then set the new one.
+            // This allows key rotation in a single transaction without a no-operator gap.
+            if existing == operator {
+                return Ok(());
             }
-            return Ok(());
+            // Revoke the old operator
+            events::operator_revoked(&env, &caller);
         }
 
+        // Set the new operator
         env.storage().instance().set(&DataKey::Operator, &operator);
         events::operator_set(&env, &caller, &operator);
         Ok(())
@@ -757,12 +804,12 @@ impl DripStream {
     ///
     /// Useful for UIs that want to show "X streamed, Y withdrawn, Z remaining"
     /// without the caller needing to reimplement the rate × elapsed math.
-    pub fn streamed_total(env: Env) -> i128 {
+    pub fn streamed_total(env: Env) -> Result<i128, Error> {
         let info = state::load(&env);
         if info.is_cancelled() {
-            return 0;
+            return Ok(0);
         }
-        math::streamed_amount(&env, &info).unwrap_or(0)
+        math::streamed_amount(&env, &info)
     }
 
     /// Read-only: full stream state.
@@ -776,10 +823,11 @@ impl DripStream {
     /// processed after reconnecting. A gap means the missing ledger range
     /// must be replayed before live processing continues.
     pub fn event_sequence(env: Env) -> u64 {
-        env.storage()
-            .instance()
-            .get(&DataKey::EventSequence)
-            .unwrap_or(0)
+        let storage = env.storage().instance();
+        if storage.has(&DataKey::Config) {
+            return state::load(&env).event_sequence;
+        }
+        storage.get(&DataKey::EventSequence).unwrap_or(0)
     }
 
     /// Storage layout version this instance was initialized with.

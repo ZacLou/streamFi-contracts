@@ -159,6 +159,8 @@ dependencies = [
  "drip-governor",
  "drip-oracle",
  "drip-stream",
+ "serde",
+ "serde_json",
  "soroban-sdk",
 ]
 
@@ -406,6 +408,7 @@ dependencies = [
 name = "drip-oracle"
 version = "0.1.0"
 dependencies = [
+ "drip-common",
  "soroban-sdk",
 ]
 

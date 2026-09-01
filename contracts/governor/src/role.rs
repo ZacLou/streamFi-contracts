@@ -29,6 +29,14 @@ pub fn has_role(env: &Env, role: Role, account: &Address) -> bool {
     rbac::has_role(env, &role_key(role, account))
 }
 
+/// Number of accounts currently holding `Role::Admin` (zero pre-initialization).
+///
+/// Part of the governor RBAC surface; no contract entry point calls it yet.
+#[allow(dead_code)]
+pub fn admin_count(env: &Env) -> u32 {
+    rbac::admin_count(env, &DataKey::AdminCount)
+}
+
 /// Grants `role` to `account`.
 ///
 /// Idempotent: re-granting a role the account already holds is a no-op, so the
