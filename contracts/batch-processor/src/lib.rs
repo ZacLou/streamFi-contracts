@@ -89,3 +89,6 @@ impl BatchTransferProcessor {
         Ok(total)
     }
 }
+
+#[cfg(test)]
+mod tests;
