@@ -291,6 +291,7 @@ fn operator_can_withdraw() {
 
     let op = Address::generate(&s.env);
     s.client.set_operator(&s.owner, &op);
+    s.client.set_operator_withdraw_limit(&s.owner, &1_000);
 
     let recipient = Address::generate(&s.env);
     s.client.withdraw(&op, &recipient, &200);
@@ -298,13 +299,72 @@ fn operator_can_withdraw() {
 }
 
 #[test]
-fn operator_can_set_limit() {
+fn operator_can_lower_limit() {
     let s = Setup::new(1_000_000);
 
     let op = Address::generate(&s.env);
     s.client.set_operator(&s.owner, &op);
 
-    s.client.set_limit(&op, &2_000_000);
+    s.client.set_limit(&op, &500_000);
+
+    let vault_id = s.client.address.clone();
+    s.env.as_contract(&vault_id, || {
+        assert_eq!(storage::get_max_limit(&s.env), Some(500_000));
+    });
+}
+
+#[test]
+fn operator_cannot_raise_limit() {
+    let s = Setup::new(1_000_000);
+
+    let op = Address::generate(&s.env);
+    s.client.set_operator(&s.owner, &op);
+
+    let result = s.client.try_set_limit(&op, &2_000_000);
+    assert_eq!(result, Err(Ok(Error::NotAuthorized)));
+}
+
+#[test]
+fn owner_can_raise_limit() {
+    let s = Setup::new(1_000_000);
+
+    s.client.set_limit(&s.owner, &2_000_000);
+
+    let vault_id = s.client.address.clone();
+    s.env.as_contract(&vault_id, || {
+        assert_eq!(storage::get_max_limit(&s.env), Some(2_000_000));
+    });
+}
+
+#[test]
+fn operator_withdraw_limit_is_enforced() {
+    let s = Setup::new(1_000_000);
+    s.client.deposit(&s.owner, &500);
+
+    let op = Address::generate(&s.env);
+    s.client.set_operator(&s.owner, &op);
+    s.client.set_operator_withdraw_limit(&s.owner, &100);
+
+    let recipient = Address::generate(&s.env);
+    let result = s.client.try_withdraw(&op, &recipient, &200);
+    assert_eq!(result, Err(Ok(Error::LimitExceeded)));
+
+    s.client.withdraw(&op, &recipient, &100);
+    assert_eq!(s.token.balance(&recipient), 100);
+}
+
+#[test]
+fn owner_withdraw_is_not_limited_by_operator_cap() {
+    let s = Setup::new(1_000_000);
+    s.client.deposit(&s.owner, &500);
+
+    let op = Address::generate(&s.env);
+    s.client.set_operator(&s.owner, &op);
+    s.client.set_operator_withdraw_limit(&s.owner, &100);
+
+    let recipient = Address::generate(&s.env);
+    s.client.withdraw(&s.owner, &recipient, &500);
+    assert_eq!(s.token.balance(&recipient), 500);
 }
 
 #[test]

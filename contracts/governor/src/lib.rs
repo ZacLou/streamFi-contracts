@@ -21,6 +21,7 @@ mod errors;
 mod events;
 mod role;
 mod storage;
+mod tests;
 mod ttl;
 
 use soroban_sdk::{contract, contractimpl, panic_with_error, Address, BytesN, Env, Symbol, Vec};
@@ -86,6 +87,7 @@ impl DripGovernor {
         s.set(&DataKey::MaxDurationSeconds, &315_360_000_u64); // 10 years
         s.set(&DataKey::MaxRatePerSecond, &1_000_000_000_000_000_i128);
         s.set(&DataKey::FactoryAddress, &factory_address);
+        s.set(&DataKey::ForceCancelPauseSecs, &2_592_000_u64); // 30 days
 
         role::grant(&env, Role::Admin, &authority);
         role::grant(&env, Role::FeeManager, &authority);
@@ -107,11 +109,14 @@ impl DripGovernor {
     ///
     /// Focused accessor for callers that only need this one field, avoiding
     /// a full `config()` round-trip (mirrors `DripFactory::protocol_fee_bps`).
-    pub fn min_duration(env: Env) -> u64 {
-        env.storage()
-            .instance()
-            .get(&DataKey::MinDurationSeconds)
-            .unwrap_or(3600)
+    ///
+    /// Returns `Err(NotInitialized)` for an uninitialised governor, matching
+    /// [`DripGovernor::max_duration`], [`DripGovernor::max_rate`], and
+    /// [`DripGovernor::config`] — previously this accessor alone silently
+    /// returned a hardcoded `3600` default, so callers could not distinguish
+    /// "governor says 3600" from "governor doesn't exist yet".
+    pub fn min_duration(env: Env) -> Result<u64, Error> {
+        Ok(config::load(&env)?.min_duration_seconds)
     }
 
     /// Whether `account` currently holds `role`.
@@ -302,7 +307,8 @@ impl DripGovernor {
         caller: Address,
         new_authority: Address,
     ) -> Result<(), Error> {
-        if is_zero_address(&env, &new_authority)
+        if new_authority == caller
+            || is_zero_address(&env, &new_authority)
             || role::has_role(&env, Role::Admin, &new_authority)
         {
             return Err(Error::InvalidParam);
@@ -446,6 +452,11 @@ impl DripGovernor {
         }
         assert_not_paused(&env)?;
         role::require_role_or_admin(&env, &caller, Role::RateManager)?;
+        let old_min_duration: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::MinDurationSeconds)
+            .unwrap_or(3600);
         let max_duration: u64 = env
             .storage()
             .instance()
@@ -464,7 +475,7 @@ impl DripGovernor {
         env.storage()
             .instance()
             .set(&DataKey::MinDurationSeconds, &seconds);
-        events::set_min_duration(&env, &caller, seconds);
+        events::set_min_duration(&env, &caller, old_min_duration, seconds);
         Ok(())
     }
 
@@ -474,6 +485,11 @@ impl DripGovernor {
         }
         assert_not_paused(&env)?;
         role::require_role_or_admin(&env, &caller, Role::RateManager)?;
+        let old_max_rate: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::MaxRatePerSecond)
+            .unwrap_or(1_000_000_000_000_000);
         let min_duration: u64 = env
             .storage()
             .instance()
@@ -484,7 +500,7 @@ impl DripGovernor {
         env.storage()
             .instance()
             .set(&DataKey::MaxRatePerSecond, &max_rate);
-        events::set_max_rate(&env, &caller, max_rate);
+        events::set_max_rate(&env, &caller, old_max_rate, max_rate);
         Ok(())
     }
 
@@ -494,6 +510,11 @@ impl DripGovernor {
         }
         assert_not_paused(&env)?;
         role::require_role_or_admin(&env, &caller, Role::RateManager)?;
+        let old_max_duration: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::MaxDurationSeconds)
+            .unwrap_or(315_360_000);
         let min_duration: u64 = env
             .storage()
             .instance()
@@ -505,7 +526,31 @@ impl DripGovernor {
         env.storage()
             .instance()
             .set(&DataKey::MaxDurationSeconds, &seconds);
-        events::set_max_duration(&env, &caller, seconds);
+        events::set_max_duration(&env, &caller, old_max_duration, seconds);
+        Ok(())
+    }
+
+    /// Sets the number of seconds a stream must remain paused before its
+    /// recipient may call `DripStream::force_cancel`.
+    ///
+    /// Governance-configurable per deployment: a payroll protocol might want
+    /// 7 days, a long-horizon vesting stream 90. Gated by `RateManager` —
+    /// the same role tier that already controls the other stream bounds
+    /// (`set_min_duration`, `set_max_duration`, `set_max_rate`).
+    pub fn set_force_cancel_pause_threshold(
+        env: Env,
+        caller: Address,
+        seconds: u64,
+    ) -> Result<(), Error> {
+        if seconds == 0 {
+            return Err(Error::InvalidParam);
+        }
+        assert_not_paused(&env)?;
+        role::require_role_or_admin(&env, &caller, Role::RateManager)?;
+        env.storage()
+            .instance()
+            .set(&DataKey::ForceCancelPauseSecs, &seconds);
+        events::set_force_cancel_pause_threshold(&env, &caller, seconds);
         Ok(())
     }
 }

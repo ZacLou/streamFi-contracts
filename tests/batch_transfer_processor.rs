@@ -1,291 +1,206 @@
-//! Regression tests for
-//! `conduit_integration_tests::batch_transfer_processor::BatchTransferProcessor`.
+//! Integration tests for
+//! `drip_batch_processor::BatchTransferProcessor::process_batch`.
 //!
-//! Covers:
-//! - Basic sum + lock-release contract (audit-round-2-v2)
-//! - Issue #83: Defensive null/boundary guards against NPE edge cases
-//! - Issue #84: State-version race-condition protection
-
-#![cfg(test)]
+//! The processor pulls `sum(amounts)` from a single `funder` (one inbound
+//! transfer, one auth) and fans the funds out to `recipients` in order. All
+//! validation runs before any token movement.
 
 use drip_batch_processor::{BatchTransferProcessor, BatchTransferProcessorClient, Error};
-use soroban_sdk::{symbol_short, Env, Vec};
+use soroban_sdk::{testutils::Address as _, token, Address, Env, Vec};
 
-const LOCK_KEY: soroban_sdk::Symbol = symbol_short!("B_Lock");
+struct Fixture<'a> {
+    env: Env,
+    client: BatchTransferProcessorClient<'a>,
+    token: token::Client<'a>,
+    token_admin_client: token::StellarAssetClient<'a>,
+    funder: Address,
+}
 
-fn deploy_processor(env: &Env) -> BatchTransferProcessorClient<'_> {
+fn setup<'a>() -> Fixture<'a> {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let token_admin = Address::generate(&env);
+    let token_addr = env
+        .register_stellar_asset_contract_v2(token_admin.clone())
+        .address();
+
     let id = env.register_contract(None, BatchTransferProcessor);
-    BatchTransferProcessorClient::new(env, &id)
+    let client = BatchTransferProcessorClient::new(&env, &id);
+
+    let funder = Address::generate(&env);
+
+    Fixture {
+        token: token::Client::new(&env, &token_addr),
+        token_admin_client: token::StellarAssetClient::new(&env, &token_addr),
+        client,
+        funder,
+        env,
+    }
 }
 
-/// Reads the processor's lock state from instance storage. Returns
-/// `false` when the entry was never written, matching the contract's
-/// own default of "unlocked".
-fn lock_state(env: &Env, client: &BatchTransferProcessorClient<'_>) -> bool {
-    env.as_contract(&client.address, || {
-        env.storage()
-            .instance()
-            .get::<_, u32>(&LOCK_KEY)
-            .unwrap_or(0)
-            > 0
-    })
-}
-
-#[test]
-fn process_batch_sums_amounts_and_releases_lock() {
-    let env = Env::default();
-    let client = deploy_processor(&env);
-    let amounts = Vec::from_array(&env, [10u64, 20, 30]);
-    assert_eq!(client.try_process_batch(&amounts), Ok(Ok(60)));
-    assert!(
-        !lock_state(&env, &client),
-        "lock must be released after a successful call",
-    );
+fn addrs(env: &Env, n: u32) -> Vec<Address> {
+    let mut v = Vec::new(env);
+    for _ in 0..n {
+        v.push_back(Address::generate(env));
+    }
+    v
 }
 
 #[test]
-fn process_batch_empty_input_returns_zero() {
-    let env = Env::default();
-    let client = deploy_processor(&env);
-    let amounts: Vec<u64> = Vec::new(&env);
-    assert_eq!(client.try_process_batch(&amounts), Ok(Ok(0)));
-    assert!(
-        !lock_state(&env, &client),
-        "lock must be released after an empty-input call",
-    );
+fn process_batch_fans_out_to_every_recipient() {
+    let f = setup();
+    f.token_admin_client.mint(&f.funder, &100);
+
+    let recipients = addrs(&f.env, 3);
+    let amounts = Vec::from_array(&f.env, [10i128, 20, 30]);
+
+    let total = f
+        .client
+        .process_batch(&f.funder, &f.token.address, &recipients, &amounts);
+
+    assert_eq!(total, 60);
+    assert_eq!(f.token.balance(&recipients.get(0).unwrap()), 10);
+    assert_eq!(f.token.balance(&recipients.get(1).unwrap()), 20);
+    assert_eq!(f.token.balance(&recipients.get(2).unwrap()), 30);
+    assert_eq!(f.token.balance(&f.funder), 40);
+}
+
+#[test]
+fn process_batch_empty_input_is_a_noop() {
+    let f = setup();
+    let recipients: Vec<Address> = Vec::new(&f.env);
+    let amounts: Vec<i128> = Vec::new(&f.env);
+
+    let total = f
+        .client
+        .process_batch(&f.funder, &f.token.address, &recipients, &amounts);
+
+    assert_eq!(total, 0);
+    assert_eq!(f.token.balance(&f.funder), 0);
 }
 
 #[test]
 fn process_batch_accepts_exactly_100_entries() {
-    let env = Env::default();
-    let client = deploy_processor(&env);
-    let amounts = Vec::from_array(&env, [1u64; 100]);
-    assert_eq!(client.try_process_batch(&amounts), Ok(Ok(100)));
-    assert!(
-        !lock_state(&env, &client),
-        "lock must be released after a max-sized successful call",
-    );
+    let f = setup();
+    f.token_admin_client.mint(&f.funder, &100);
+
+    let recipients = addrs(&f.env, 100);
+    let mut amounts = Vec::new(&f.env);
+    for _ in 0..100 {
+        amounts.push_back(1i128);
+    }
+
+    let total = f
+        .client
+        .process_batch(&f.funder, &f.token.address, &recipients, &amounts);
+
+    assert_eq!(total, 100);
+    assert_eq!(f.token.balance(&f.funder), 0);
 }
 
 #[test]
-fn process_batch_rejects_101_entries_and_releases_lock() {
-    let env = Env::default();
-    let client = deploy_processor(&env);
-    let amounts = Vec::from_array(&env, [1u64; 101]);
+fn process_batch_rejects_101_entries() {
+    let f = setup();
+    let recipients = addrs(&f.env, 101);
+    let mut amounts = Vec::new(&f.env);
+    for _ in 0..101 {
+        amounts.push_back(1i128);
+    }
+
     assert_eq!(
-        client.try_process_batch(&amounts),
+        f.client
+            .try_process_batch(&f.funder, &f.token.address, &recipients, &amounts),
         Err(Ok(Error::BatchTooLarge)),
     );
-    assert!(
-        !lock_state(&env, &client),
-        "BatchTooLarge must release the lock so the next caller is not \
-         fooled by a stale flag",
-    );
 }
 
 #[test]
-fn process_batch_detects_overflow_and_releases_lock() {
-    let env = Env::default();
-    let client = deploy_processor(&env);
-    // `u64::MAX + 1` is the smallest pair that overflows `checked_add`.
-    let amounts = Vec::from_array(&env, [u64::MAX, 1u64]);
+fn process_batch_rejects_length_mismatch() {
+    let f = setup();
+    let recipients = addrs(&f.env, 2);
+    let amounts = Vec::from_array(&f.env, [1i128]);
+
     assert_eq!(
-        client.try_process_batch(&amounts),
-        Err(Ok(Error::CalculationOverflow)),
-    );
-    assert!(
-        !lock_state(&env, &client),
-        "CalculationOverflow must release the lock",
+        f.client
+            .try_process_batch(&f.funder, &f.token.address, &recipients, &amounts),
+        Err(Ok(Error::LengthMismatch)),
     );
 }
-
-#[test]
-fn process_batch_rejects_when_lock_is_held() {
-    let env = Env::default();
-    let client = deploy_processor(&env);
-
-    // Simulate a previous call that exited before clearing the lock
-    // (e.g. a host panic). The contract must reject the next call
-    // gracefully and not corrupt the externally-imposed lock state.
-    env.as_contract(&client.address, || {
-        env.storage().instance().set(&LOCK_KEY, &1_u32);
-    });
-
-    let amounts = Vec::from_array(&env, [42u64]);
-    assert_eq!(
-        client.try_process_batch(&amounts),
-        Err(Ok(Error::ProcessorLocked)),
-    );
-    // The ProcessorLocked path is an early return BEFORE the contract
-    // touches the lock. Lock in that invariant here: a future refactor
-    // that adds a stray `set(lock_key, false)` (or any storage write)
-    // adjacent to the early return would silently change a no-op-on-error
-    // contract into a state-mutating one — this assertion catches it.
-    assert!(
-        lock_state(&env, &client),
-        "ProcessorLocked must short-circuit without touching the lock",
-    );
-}
-
-#[test]
-fn error_type_carries_required_traits_and_named_discriminants() {
-    fn assert_traits<T: Copy + Clone + core::fmt::Debug + Eq + PartialEq + PartialOrd + Ord>() {}
-    assert_traits::<Error>();
-    // Lock in the discriminant values so client integrators (and
-    // downstream error handling in tests) cannot silently drift.
-    assert_eq!(Error::ProcessorLocked as u32, 2001);
-    assert_eq!(Error::CalculationOverflow as u32, 2002);
-    assert_eq!(Error::BatchTooLarge as u32, 2003);
-    assert_eq!(Error::StateVersionMismatch as u32, 2004);
-    assert_eq!(Error::StaleCallbackCleaned as u32, 2005);
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-//  Issue #83 regression: null / boundary edge cases
-// ────────────────────────────────────────────────────────────────────────��────
 
 #[test]
 fn process_batch_rejects_zero_amount() {
-    let env = Env::default();
-    let client = deploy_processor(&env);
-    // Zero is a degenerate amount that could trigger NPE-like downstream
-    // divide-by-zero or infinite-loop edge cases.
-    let amounts = Vec::from_array(&env, [0u64]);
+    let f = setup();
+    let recipients = addrs(&f.env, 1);
+    let amounts = Vec::from_array(&f.env, [0i128]);
+
     assert_eq!(
-        client.try_process_batch(&amounts),
-        Err(Ok(Error::CalculationOverflow)),
-    );
-    assert!(
-        !lock_state(&env, &client),
-        "lock must be released after zero-amount rejection",
+        f.client
+            .try_process_batch(&f.funder, &f.token.address, &recipients, &amounts),
+        Err(Ok(Error::InvalidAmount)),
     );
 }
 
 #[test]
 fn process_batch_rejects_zero_amount_in_mixed_batch() {
-    let env = Env::default();
-    let client = deploy_processor(&env);
-    let amounts = Vec::from_array(&env, [10u64, 0, 30]);
+    let f = setup();
+    let recipients = addrs(&f.env, 3);
+    let amounts = Vec::from_array(&f.env, [10i128, 0, 30]);
+
     assert_eq!(
-        client.try_process_batch(&amounts),
-        Err(Ok(Error::CalculationOverflow)),
-    );
-    assert!(
-        !lock_state(&env, &client),
-        "lock must be released after detecting zero in batch",
+        f.client
+            .try_process_batch(&f.funder, &f.token.address, &recipients, &amounts),
+        Err(Ok(Error::InvalidAmount)),
     );
 }
 
 #[test]
-fn process_batch_rejects_single_zero_entry() {
-    let env = Env::default();
-    let client = deploy_processor(&env);
-    let amounts = Vec::from_array(&env, [0u64]);
+fn process_batch_rejects_negative_amount() {
+    let f = setup();
+    let recipients = addrs(&f.env, 1);
+    let amounts = Vec::from_array(&f.env, [-5i128]);
+
     assert_eq!(
-        client.try_process_batch(&amounts),
-        Err(Ok(Error::CalculationOverflow)),
+        f.client
+            .try_process_batch(&f.funder, &f.token.address, &recipients, &amounts),
+        Err(Ok(Error::InvalidAmount)),
     );
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  Issue #84 regression: state-version race-condition guards
-// ─────────────────────────────────────────────────────────────────────────────
-
 #[test]
-fn process_batch_succeeds_from_arbitrary_starting_version() {
-    let env = Env::default();
-    let client = deploy_processor(&env);
+fn process_batch_detects_total_overflow() {
+    let f = setup();
+    let recipients = addrs(&f.env, 2);
+    let amounts = Vec::from_array(&f.env, [i128::MAX, 1]);
 
-    // Pre-set the version to an arbitrary value (e.g. 99) to verify the
-    // contract correctly increments from any starting point.
-    let state_ver_key = soroban_sdk::symbol_short!("B_Ver");
-    env.as_contract(&client.address, || {
-        env.storage().instance().set(&state_ver_key, &99_u64);
-    });
-
-    let amounts = Vec::from_array(&env, [10u64, 20]);
-    assert_eq!(client.try_process_batch(&amounts), Ok(Ok(30)));
-    assert!(
-        !lock_state(&env, &client),
-        "lock must be released after a successful call",
+    assert_eq!(
+        f.client
+            .try_process_batch(&f.funder, &f.token.address, &recipients, &amounts),
+        Err(Ok(Error::ArithmeticOverflow)),
     );
-
-    // Version should have been bumped to 100.
-    let v: u64 = env.as_contract(&client.address, || {
-        env.storage().instance().get(&state_ver_key).unwrap_or(0)
-    });
-    assert_eq!(v, 100);
 }
 
 #[test]
-fn process_batch_increments_version_on_success() {
-    let env = Env::default();
-    let client = deploy_processor(&env);
-    let state_ver_key = soroban_sdk::symbol_short!("B_Ver");
+fn process_batch_does_not_move_funds_when_validation_fails() {
+    let f = setup();
+    f.token_admin_client.mint(&f.funder, &1_000);
 
-    // Before any call, version is 0.
-    let v0: u64 = env.as_contract(&client.address, || {
-        env.storage().instance().get(&state_ver_key).unwrap_or(0)
-    });
-    assert_eq!(v0, 0);
+    // Length mismatch — must bail before any transfer.
+    let recipients = addrs(&f.env, 2);
+    let amounts = Vec::from_array(&f.env, [10i128]);
+    let _ = f
+        .client
+        .try_process_batch(&f.funder, &f.token.address, &recipients, &amounts);
 
-    // After a successful call, version must have been bumped.
-    let amounts = Vec::from_array(&env, [5u64, 5]);
-    let r = client.try_process_batch(&amounts);
-    assert!(r.is_ok());
-
-    let v1: u64 = env.as_contract(&client.address, || {
-        env.storage().instance().get(&state_ver_key).unwrap_or(0)
-    });
-    assert_eq!(v1, 1);
+    assert_eq!(f.token.balance(&f.funder), 1_000);
 }
 
 #[test]
-fn process_batch_succeeds_after_manual_version_set() {
-    let env = Env::default();
-    let client = deploy_processor(&env);
-    let state_ver_key = soroban_sdk::symbol_short!("B_Ver");
-
-    // First call succeeds, bumping version to 1.
-    let amounts = Vec::from_array(&env, [100u64]);
-    assert!(client.try_process_batch(&amounts).is_ok());
-
-    // Manually set version to 42 to simulate external state change.
-    // The contract should still succeed — it reads the current version,
-    // bumps it, and verifies the bump was applied correctly.
-    env.as_contract(&client.address, || {
-        env.storage().instance().set(&state_ver_key, &42_u64);
-    });
-
-    let amounts = Vec::from_array(&env, [200u64]);
-    assert_eq!(client.try_process_batch(&amounts), Ok(Ok(200)));
-
-    // Version should now be 43.
-    let v: u64 = env.as_contract(&client.address, || {
-        env.storage().instance().get(&state_ver_key).unwrap_or(0)
-    });
-    assert_eq!(v, 43);
-}
-
-#[test]
-fn process_batch_stale_callback_seq_does_not_block_new_calls() {
-    let env = Env::default();
-    let client = deploy_processor(&env);
-
-    // Simulate an orphaned callback sequence from a previous interrupted call.
-    let cb_seq_key = soroban_sdk::symbol_short!("B_CbSeq");
-    env.as_contract(&client.address, || {
-        env.storage().instance().set(&cb_seq_key, &999_u64);
-    });
-
-    // A new call must not be blocked by stale callback state.
-    let amounts = Vec::from_array(&env, [7u64, 8, 9]);
-    let result = client.try_process_batch(&amounts);
-    assert!(result.is_ok());
-
-    // The callback sequence should have advanced past the stale value.
-    let seq: u64 = env.as_contract(&client.address, || {
-        env.storage().instance().get(&cb_seq_key).unwrap_or(0)
-    });
-    assert_eq!(seq, 1000);
+fn error_type_carries_required_traits() {
+    fn assert_traits<T: Copy + Clone + core::fmt::Debug + Eq + PartialEq + PartialOrd + Ord>() {}
+    assert_traits::<Error>();
+    assert_eq!(Error::LengthMismatch as u32, 1);
+    assert_eq!(Error::BatchTooLarge as u32, 2);
+    assert_eq!(Error::InvalidAmount as u32, 3);
+    assert_eq!(Error::ArithmeticOverflow as u32, 4);
 }
