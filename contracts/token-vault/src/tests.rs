@@ -972,3 +972,122 @@ fn uninitialized_vault_rejects_owner_transfer() {
         Err(Ok(Error::NoPendingOwner))
     );
 }
+
+// ── Negative-path owner transfer tests (#439) ───────────────────────────────
+
+#[test]
+fn re_propose_overwrites_pending_owner() {
+    let s = Setup::new(1_000_000);
+    let first = Address::generate(&s.env);
+    let second = Address::generate(&s.env);
+
+    // Propose `first`, then re-propose `second`.
+    s.client.propose_owner(&s.owner, &first);
+    s.client.propose_owner(&s.owner, &second);
+
+    // `first` is no longer the pending owner and cannot accept.
+    assert_eq!(
+        s.client.try_accept_owner(&first),
+        Err(Ok(Error::NotPendingOwner))
+    );
+
+    // `second` can accept.
+    s.client.accept_owner(&second);
+    assert_eq!(s.client.owner(), Some(second));
+}
+
+#[test]
+fn accept_after_re_propose_fails_for_previous_pending() {
+    let s = Setup::new(1_000_000);
+    let alice = Address::generate(&s.env);
+    let bob = Address::generate(&s.env);
+
+    // Owner proposes alice, then re-proposes bob.
+    s.client.propose_owner(&s.owner, &alice);
+    s.client.propose_owner(&s.owner, &bob);
+
+    // Alice (previous pending owner) tries to accept → rejected.
+    assert_eq!(
+        s.client.try_accept_owner(&alice),
+        Err(Ok(Error::NotPendingOwner))
+    );
+
+    // Owner is still the owner — transfer wasn't completed.
+    assert_eq!(s.client.owner(), Some(s.owner.clone()));
+}
+
+#[test]
+fn deposit_during_pending_transfer_uses_current_owner() {
+    let s = Setup::new(1_000_000);
+    let new_owner = Address::generate(&s.env);
+
+    s.client.propose_owner(&s.owner, &new_owner);
+
+    // Pending owner (not yet accepted) cannot deposit.
+    assert_eq!(
+        s.client.try_deposit(&new_owner, &100),
+        Err(Ok(Error::NotAuthorized))
+    );
+
+    // Current owner can still deposit normally.
+    s.client.deposit(&s.owner, &100);
+    assert_eq!(s.token.balance(&s.client.address), 100);
+}
+
+#[test]
+fn withdraw_during_pending_transfer_uses_current_owner() {
+    let s = Setup::new(1_000_000);
+    let new_owner = Address::generate(&s.env);
+
+    // Deposit first so there are funds to withdraw.
+    s.client.deposit(&s.owner, &500);
+
+    s.client.propose_owner(&s.owner, &new_owner);
+
+    // Pending owner (not yet accepted) cannot withdraw.
+    assert_eq!(
+        s.client.try_withdraw(&new_owner, &s.owner, &100),
+        Err(Ok(Error::NotAuthorized))
+    );
+
+    // Current owner can still withdraw.
+    s.client.withdraw(&s.owner, &s.owner, &200);
+    assert_eq!(s.token.balance(&s.client.address), 300);
+}
+
+#[test]
+fn set_limit_during_pending_transfer_uses_current_owner() {
+    let s = Setup::new(1_000_000);
+    let new_owner = Address::generate(&s.env);
+
+    s.client.propose_owner(&s.owner, &new_owner);
+
+    // Pending owner cannot set_limit.
+    assert_eq!(
+        s.client.try_set_limit(&new_owner, &2_000_000),
+        Err(Ok(Error::NotAuthorized))
+    );
+
+    // Current owner can still set_limit — if the call succeeds, the limit was
+    // updated. A NotAuthorized error would have been returned above if the
+    // pending owner check was wrong.
+    s.client.set_limit(&s.owner, &2_000_000);
+}
+
+#[test]
+fn pause_during_pending_transfer_uses_current_owner() {
+    let s = Setup::new(1_000_000);
+    let new_owner = Address::generate(&s.env);
+
+    s.client.propose_owner(&s.owner, &new_owner);
+
+    // Pending owner cannot pause.
+    assert_eq!(
+        s.client.try_pause(&new_owner),
+        Err(Ok(Error::NotAuthorized))
+    );
+
+    // Current owner can still pause.
+    s.client.pause(&s.owner);
+    assert!(s.client.is_paused());
+}
