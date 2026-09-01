@@ -954,6 +954,61 @@ fn owner_transfer_emits_events() {
 }
 
 #[test]
+#[test]
+fn re_propose_overwrites_pending_owner() {
+    let s = Setup::new(1_000_000);
+    let first_pending = Address::generate(&s.env);
+    let second_pending = Address::generate(&s.env);
+
+    s.client.propose_owner(&s.owner, &first_pending);
+    assert_eq!(
+        s.env
+            .as_contract(&s.client.address, || storage::get_pending_owner(&s.env)),
+        Some(first_pending.clone())
+    );
+
+    // Owner re-proposes to a different address.
+    s.client.propose_owner(&s.owner, &second_pending);
+    assert_eq!(
+        s.env
+            .as_contract(&s.client.address, || storage::get_pending_owner(&s.env)),
+        Some(second_pending.clone())
+    );
+
+    // The first pending owner can no longer accept.
+    let result = s.client.try_accept_owner(&first_pending);
+    assert_eq!(result, Err(Ok(Error::NotPendingOwner)));
+
+    // Only the second pending owner can accept.
+    s.client.accept_owner(&second_pending);
+    assert_eq!(s.client.owner(), Some(second_pending));
+}
+
+#[test]
+fn operations_during_pending_transfer_succeed() {
+    let s = Setup::new(1_000_000);
+    let new_owner = Address::generate(&s.env);
+
+    s.client.deposit(&s.owner, &500);
+    s.client.propose_owner(&s.owner, &new_owner);
+
+    // Pending transfer must not block deposits / withdrawals.
+    s.client.deposit(&s.owner, &200);
+
+    let recipient = Address::generate(&s.env);
+    s.client.withdraw(&s.owner, &recipient, &100);
+    assert_eq!(s.token.balance(&recipient), 100);
+
+    // Old owner can still pause.
+    s.client.pause(&s.owner);
+    assert!(s.client.is_paused());
+    s.client.unpause(&s.owner);
+
+    // Transfer completes normally afterwards.
+    s.client.accept_owner(&new_owner);
+    assert_eq!(s.client.owner(), Some(new_owner));
+}
+
 fn uninitialized_vault_rejects_owner_transfer() {
     let env = Env::default();
     env.mock_all_auths();
