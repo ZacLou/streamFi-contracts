@@ -43,7 +43,7 @@ fn deploy_factory(env: &Env) -> DripFactoryClient<'_> {
     governor_client.initialize(&authority, &fee_recipient, &factory_id);
 
     let client = DripFactoryClient::new(env, &factory_id);
-    let dummy_hash = BytesN::from_array(env, &[0u8; 32]);
+    let dummy_hash = BytesN::from_array(env, &[1u8; 32]);
     client.initialize(&dummy_hash, &governor_id);
     client
 }

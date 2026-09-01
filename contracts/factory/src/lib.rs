@@ -21,13 +21,16 @@ use drip_common::is_zero_address;
 
 pub use errors::Error;
 use storage::DataKey;
-pub use storage::{BatchStreamRequest, FactoryStatus, FeeEstimate, StreamOperation, StreamPage};
+pub use storage::{
+    Aggregate, BatchStreamRequest, FactoryStatus, FeeEstimate, StreamOperation, StreamPage,
+};
 
 /// Maximum number of streams accepted by a single `create_batch_streams`
-/// (and `cancel_batch_streams`/`stream_addresses`) call. Each
-/// `create_stream` in the batch performs a governor cross-contract call,
-/// two `token::transfer`s, a contract deploy + `initialize` invoke, and
-/// three persistent writes with TTL extensions (~2.5M CPU instructions).
+/// (and `cancel_batch_streams`/`stream_addresses`) call. The batch
+/// performs one governor cross-contract config call, and each stream
+/// performs two `token::transfer`s, a contract deploy + `initialize`
+/// invoke, and three persistent writes with TTL extensions (~2.5M CPU
+/// instructions).
 /// A batch of 100 would require ~250M instructions and a footprint far
 /// beyond the per-transaction budget, so the old cap of 100 was never
 /// reachable in practice — it would exhaust the instruction/footprint
@@ -57,6 +60,12 @@ impl DripFactory {
         if env.storage().instance().has(&DataKey::StreamCount) {
             panic_with_error!(&env, Error::AlreadyInitialized);
         }
+        if is_zero_wasm_hash(&env, &stream_wasm_hash) {
+            panic_with_error!(&env, Error::InvalidWasmHash);
+        }
+        if is_zero_address(&env, &governor) {
+            panic_with_error!(&env, Error::InvalidGovernor);
+        }
         ttl::bump_instance(&env);
 
         env.storage()
@@ -66,6 +75,17 @@ impl DripFactory {
             .instance()
             .set(&DataKey::GovernorAddress, &governor);
         env.storage().instance().set(&DataKey::StreamCount, &0_u64);
+        env.storage().instance().set(
+            &DataKey::Aggregate,
+            &Aggregate {
+                total_supply: 0,
+                active_streams: 0,
+            },
+        );
+        env.storage().instance().set(
+            &DataKey::FactoryStorageVersion,
+            &storage::CURRENT_STORAGE_VERSION,
+        );
     }
 
     /// Deploy a new DripStream and register it.
@@ -97,13 +117,59 @@ impl DripFactory {
             return Err(Error::ContractPaused);
         }
 
+        // ── Validation ───────────────────────────────────────────────────
+        let now = Self::validate_stream_request(
+            &env,
+            &sender,
+            &recipient,
+            &token,
+            deposit,
+            rate_per_sec,
+            start_time,
+            end_time,
+        )?;
+
+        // ── Governor-controlled bounds ──────────────────────────────────────
+        let governor: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::GovernorAddress)
+            .ok_or(Error::NotInitialized)?;
+        let config = governance::config(&env, &governor)?;
+
+        Self::create_stream_with_config(
+            env,
+            &config,
+            now,
+            sender,
+            recipient,
+            token,
+            deposit,
+            rate_per_sec,
+            start_time,
+            end_time,
+            clawback,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn validate_stream_request(
+        env: &Env,
+        sender: &Address,
+        recipient: &Address,
+        token: &Address,
+        deposit: i128,
+        rate_per_sec: i128,
+        start_time: u64,
+        end_time: u64,
+    ) -> Result<u64, Error> {
         // ── Recipient validation ─────────────────────────────────────────
-        if is_zero_address(&env, &recipient) || recipient == sender {
+        if is_zero_address(env, recipient) || recipient == sender {
             return Err(Error::InvalidRecipient);
         }
 
         // ── Token validation ─────────────────────────────────────────────
-        if is_zero_address(&env, &token) {
+        if is_zero_address(env, token) {
             return Err(Error::InvalidToken);
         }
 
@@ -142,15 +208,25 @@ impl DripFactory {
                 return Err(Error::InsufficientDeposit);
             }
         }
+        Ok(now)
+    }
 
+    #[allow(clippy::too_many_arguments)]
+    fn create_stream_with_config(
+        env: Env,
+        config: &governance::GovernorConfig,
+        now: u64,
+        sender: Address,
+        recipient: Address,
+        token: Address,
+        deposit: i128,
+        rate_per_sec: i128,
+        start_time: u64,
+        end_time: u64,
+        clawback: bool,
+    ) -> Result<u64, Error> {
         // ── Governor-controlled bounds ──────────────────────────────────────
-        let governor: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::GovernorAddress)
-            .ok_or(Error::NotInitialized)?;
-        let config = governance::config(&env, &governor)?;
-        governance::enforce_bounds(&config, rate_per_sec, start_time, end_time, now)?;
+        governance::enforce_bounds(config, rate_per_sec, start_time, end_time, now)?;
 
         // ── Reentrancy guard ─────────────────────────────────────────────
         // `token` is caller-supplied and may not be a well-behaved SEP-41
@@ -203,6 +279,12 @@ impl DripFactory {
         };
 
         // ── Deploy DripStream ────────────────────────────────────────────
+        // `config.force_cancel_pause_secs` was already read
+        // above (governor cross-contract call for bounds enforcement), so
+        // passing it into `initialize` here is free — no extra cross-contract
+        // call. The deployed stream stores it and reads it locally in
+        // `force_cancel`, keeping that contract's hot path free of
+        // cross-contract calls per ADR-001.
         let init_args = soroban_sdk::vec![
             &env,
             sender.to_val(),
@@ -212,6 +294,7 @@ impl DripFactory {
             start_time.into_val(&env),
             end_time.into_val(&env),
             clawback.into_val(&env),
+            config.force_cancel_pause_secs.into_val(&env),
         ];
 
         let stream_addr = deploy::deploy_stream(&env, &wasm_hash, stream_id, init_args);
@@ -247,6 +330,27 @@ impl DripFactory {
             .instance()
             .set(&DataKey::StreamCount, &(stream_count + 1));
 
+        // Increment aggregate counters after the new stream is fully persisted.
+        let mut aggregate: Aggregate =
+            env.storage()
+                .instance()
+                .get(&DataKey::Aggregate)
+                .unwrap_or(Aggregate {
+                    total_supply: 0,
+                    active_streams: 0,
+                });
+        aggregate.total_supply = aggregate
+            .total_supply
+            .checked_add(1)
+            .expect("total_supply overflow");
+        aggregate.active_streams = aggregate
+            .active_streams
+            .checked_add(1)
+            .expect("active_streams overflow");
+        env.storage()
+            .instance()
+            .set(&DataKey::Aggregate, &aggregate);
+
         // Persistent storage entry 2 — BySender (paged):
         //   Key:   DataKey::BySenderPage(sender, page)
         //          XDR serialization: [discriminant: u32][sender: XDR Address][page: u32]
@@ -268,11 +372,9 @@ impl DripFactory {
     /// Create multiple streams in one transaction, all funded and
     /// authorized by the same `sender`.
     ///
-    /// Reuses `create_stream` verbatim for each request, so validation,
-    /// governor-bound enforcement, the deposit transfer, deployment, and
-    /// registry indexing are all identical to the single-stream path --
-    /// including whatever per-stream signals `create_stream` /
-    /// `DripStream::initialize` already produce.
+    /// Uses the same per-stream validation and deployment path as
+    /// `create_stream`; the governor config is fetched once for the whole
+    /// batch and threaded through to each stream creation.
     ///
     /// Atomicity: Soroban transactions are all-or-nothing at the host
     /// level. If any request fails validation, the `?` below propagates
@@ -292,10 +394,36 @@ impl DripFactory {
             return Err(Error::BatchTooLarge);
         }
 
+        // ── Auth / pause ─────────────────────────────────────────────────
+        sender.require_auth();
+        if pause::is_paused(&env) {
+            return Err(Error::ContractPaused);
+        }
+
+        // ── Fetch governor config once for the whole batch ───────────────
+        let governor: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::GovernorAddress)
+            .ok_or(Error::NotInitialized)?;
+        let config = governance::config(&env, &governor)?;
+
         let mut stream_ids = Vec::new(&env);
         for request in requests.iter() {
-            let stream_id = Self::create_stream(
+            let now = Self::validate_stream_request(
+                &env,
+                &sender,
+                &request.recipient,
+                &request.token,
+                request.deposit,
+                request.rate_per_sec,
+                request.start_time,
+                request.end_time,
+            )?;
+            let stream_id = Self::create_stream_with_config(
                 env.clone(),
+                &config,
+                now,
                 sender.clone(),
                 request.recipient,
                 request.token,
@@ -316,6 +444,18 @@ impl DripFactory {
         env.storage()
             .persistent()
             .get(&DataKey::StreamAddr(stream_id))
+    }
+
+    /// Permissionlessly advance migration of one sender's legacy index into
+    /// paged storage. Returns the number of legacy entries migrated so far.
+    pub fn migrate_sender_index(env: Env, sender: Address, max_pages: u32) -> u32 {
+        index::migrate_sender_index(&env, sender, max_pages)
+    }
+
+    /// Permissionlessly advance migration of one recipient's legacy index into
+    /// paged storage. Returns the number of legacy entries migrated so far.
+    pub fn migrate_recipient_index(env: Env, recipient: Address, max_pages: u32) -> u32 {
+        index::migrate_recipient_index(&env, recipient, max_pages)
     }
 
     /// Cancel multiple streams in one transaction, all authorized by the
@@ -345,9 +485,44 @@ impl DripFactory {
             return Err(Error::BatchTooLarge);
         }
 
+        // Deduplicate addresses to prevent attempting multiple cancels on the same stream.
+        // Issue #416: If a duplicated address is passed, the first cancel succeeds
+        // and sets FLAG_CANCELLED; the second cancel on the now-cancelled stream would
+        // return Error::StreamCancelled, which the non-try_ variant turns into a panic.
+        // Deduplicating the list ensures each unique stream is cancelled exactly once.
+        let mut unique_addresses: Vec<Address> = Vec::new(&env);
         for stream_addr in stream_addresses.iter() {
+            let mut already_seen = false;
+            for seen_addr in unique_addresses.iter() {
+                if stream_addr == seen_addr {
+                    already_seen = true;
+                    break;
+                }
+            }
+            if !already_seen {
+                unique_addresses.push_back(stream_addr);
+            }
+        }
+
+        for stream_addr in unique_addresses.iter() {
             let stream_client = drip_stream::DripStreamClient::new(&env, &stream_addr);
             stream_client.cancel(&sender);
+
+            // Decrement the active-stream counter for every factory-routed
+            // cancellation. Direct cancellations that bypass the factory can
+            // be accounted for via `record_cancel` below.
+            let mut aggregate: Aggregate = env
+                .storage()
+                .instance()
+                .get(&DataKey::Aggregate)
+                .unwrap_or(Aggregate {
+                    total_supply: 0,
+                    active_streams: 0,
+                });
+            aggregate.active_streams = aggregate.active_streams.saturating_sub(1);
+            env.storage()
+                .instance()
+                .set(&DataKey::Aggregate, &aggregate);
         }
 
         Ok(())
@@ -372,6 +547,42 @@ impl DripFactory {
         Ok(out)
     }
 
+    /// Returns the factory's aggregate counters: total streams ever created
+    /// and the number still active.
+    pub fn aggregate(env: Env) -> Aggregate {
+        env.storage()
+            .instance()
+            .get(&DataKey::Aggregate)
+            .unwrap_or(Aggregate {
+                total_supply: 0,
+                active_streams: 0,
+            })
+    }
+
+    /// Permissionless hook for a stream contract (or anyone acting on its
+    /// behalf) to report that a stream has been cancelled.
+    ///
+    /// Direct cancellations that do not go through `cancel_batch_streams`
+    /// can call this to keep the aggregate `active_streams` counter accurate.
+    /// The call is idempotent: cancelling an already-zero counter leaves it at
+    /// zero. Stream contracts that were not deployed through this factory
+    /// cannot meaningfully decrement the counter below its true value because
+    /// each decrement corresponds to a stream that the factory counted at
+    /// creation time.
+    pub fn record_cancel(env: Env) {
+        let mut aggregate: Aggregate =
+            env.storage()
+                .instance()
+                .get(&DataKey::Aggregate)
+                .unwrap_or(Aggregate {
+                    total_supply: 0,
+                    active_streams: 0,
+                });
+        aggregate.active_streams = aggregate.active_streams.saturating_sub(1);
+        env.storage()
+            .instance()
+            .set(&DataKey::Aggregate, &aggregate);
+    }
     /// Paginated list of stream IDs created by `sender`, paired with the
     /// sender's total stream count.
     ///
@@ -513,8 +724,20 @@ impl DripFactory {
     ///
     /// This is distinct from `upgrade_stream_wasm`, which only updates the
     /// WASM hash used for *future* `create_stream` deployments. `upgrade`
-    /// replaces the factory's own implementation.
-    pub fn upgrade(env: Env, new_wasm_hash: BytesN<32>) -> Result<(), Error> {
+    /// replaces the factory's own implementation. Named `upgrade_self` (not `upgrade`) to avoid a WASM export-name clash with `DripGovernor::upgrade`, since a factory build links the governor crate.
+    ///
+    /// `expected_storage_version` must equal the *currently stored*
+    /// `DataKey::FactoryStorageVersion` (readable via `factory_storage_version()`).
+    /// Upgrade tooling should read `factory_storage_version()` and the new WASM's
+    /// own `storage::CURRENT_STORAGE_VERSION` before submitting this call,
+    /// and pass the value it confirmed matches — this guards against a
+    /// storage-layout change being deployed onto existing state without an
+    /// explicit migration step, mirroring `DripStream::storage_version`.
+    pub fn upgrade_self(
+        env: Env,
+        new_wasm_hash: BytesN<32>,
+        expected_storage_version: u32,
+    ) -> Result<(), Error> {
         let governor: Address = env
             .storage()
             .instance()
@@ -530,10 +753,32 @@ impl DripFactory {
             return Err(Error::ContractPaused);
         }
 
+        let stored_version: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::FactoryStorageVersion)
+            .ok_or(Error::NotInitialized)?;
+        if expected_storage_version != stored_version {
+            return Err(Error::StorageVersionMismatch);
+        }
+
         ttl::bump_instance(&env);
         env.deployer().update_current_contract_wasm(new_wasm_hash);
         events::upgraded(&env, &governor, env.ledger().timestamp());
         Ok(())
+    }
+
+    /// Storage layout version this instance was initialized with.
+    ///
+    /// Upgrade tooling should read this before calling `upgrade_self` and confirm
+    /// it matches both the value passed as `expected_storage_version` and
+    /// the new WASM's own expected version. Mirrors
+    /// `DripStream::storage_version`.
+    pub fn factory_storage_version(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::FactoryStorageVersion)
+            .unwrap_or(0)
     }
 
     /// Emergency halt: stop all new stream creation.

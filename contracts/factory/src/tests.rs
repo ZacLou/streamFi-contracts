@@ -9,7 +9,7 @@ use soroban_sdk::{
     Address, BytesN, Env,
 };
 
-use crate::{DripFactory, DripFactoryClient, Error};
+use crate::{storage::DataKey, DripFactory, DripFactoryClient, Error};
 
 /// Register a factory and initialize it with a dummy stream WASM hash and a
 /// freshly generated governor. Auth is mocked, so the governor-gated
@@ -30,7 +30,7 @@ impl Setup {
         env.mock_all_auths();
 
         let governor = Address::generate(&env);
-        let wasm_hash = BytesN::from_array(&env, &[0u8; 32]);
+        let wasm_hash = BytesN::from_array(&env, &[1u8; 32]);
 
         let contract_id = env.register_contract(None, DripFactory);
         let client = DripFactoryClient::new(&env, &contract_id);
@@ -198,7 +198,7 @@ fn upgrade_stream_wasm_accepts_after_unpause() {
 fn upgrade_rejects_zero_hash() {
     let s = Setup::new();
     let zero_hash = BytesN::from_array(&s.env, &[0u8; 32]);
-    let result = s.client.try_upgrade(&zero_hash);
+    let result = s.client.try_upgrade_self(&zero_hash, &1u32);
     assert_eq!(result, Err(Ok(Error::InvalidWasmHash)));
 }
 
@@ -208,7 +208,7 @@ fn upgrade_passes_auth_and_zero_hash_check() {
     // Zero hash is rejected before reaching the host-level WASM swap.
     let zero_hash = BytesN::from_array(&s.env, &[0u8; 32]);
     assert_eq!(
-        s.client.try_upgrade(&zero_hash),
+        s.client.try_upgrade_self(&zero_hash, &1u32),
         Err(Ok(Error::InvalidWasmHash))
     );
     // A non-zero hash passes validation; the host-level WASM swap
@@ -222,8 +222,22 @@ fn upgrade_rejects_when_paused() {
     let s = Setup::new();
     s.client.pause();
     let valid_hash = BytesN::from_array(&s.env, &[2u8; 32]);
-    let result = s.client.try_upgrade(&valid_hash);
+    let result = s.client.try_upgrade_self(&valid_hash, &1u32);
     assert_eq!(result, Err(Ok(Error::ContractPaused)));
+}
+
+#[test]
+fn upgrade_rejects_storage_version_mismatch() {
+    let s = Setup::new();
+    let valid_hash = BytesN::from_array(&s.env, &[2u8; 32]);
+    let result = s.client.try_upgrade_self(&valid_hash, &2u32);
+    assert_eq!(result, Err(Ok(Error::StorageVersionMismatch)));
+}
+
+#[test]
+fn storage_version_set_on_initialize() {
+    let s = Setup::new();
+    assert_eq!(s.client.factory_storage_version(), 1);
 }
 
 #[test]
@@ -232,7 +246,7 @@ fn upgrade_blocked_while_paused_then_allowed_after_unpause() {
     s.client.pause();
     let valid_hash = BytesN::from_array(&s.env, &[2u8; 32]);
     assert_eq!(
-        s.client.try_upgrade(&valid_hash),
+        s.client.try_upgrade_self(&valid_hash, &1u32),
         Err(Ok(Error::ContractPaused))
     );
 
@@ -240,9 +254,91 @@ fn upgrade_blocked_while_paused_then_allowed_after_unpause() {
     // After unpausing, zero-hash validation still rejects.
     let zero_hash = BytesN::from_array(&s.env, &[0u8; 32]);
     assert_eq!(
-        s.client.try_upgrade(&zero_hash),
+        s.client.try_upgrade_self(&zero_hash, &1u32),
         Err(Ok(Error::InvalidWasmHash))
     );
+}
+
+// ── Legacy index migration (#383) ─────────────────────────────────────────
+
+#[test]
+fn legacy_sender_index_migration_is_incremental() {
+    let s = Setup::new();
+    let sender = Address::generate(&s.env);
+
+    s.env.as_contract(&s.client.address, || {
+        let mut legacy = soroban_sdk::Vec::new(&s.env);
+        for id in 0..250_u64 {
+            legacy.push_back(id);
+        }
+        s.env
+            .storage()
+            .persistent()
+            .set(&DataKey::BySender(sender.clone()), &legacy);
+    });
+
+    assert_eq!(s.client.stream_count_by_sender(&sender), 250);
+    assert_eq!(s.client.migrate_sender_index(&sender, &1), 100);
+
+    s.env.as_contract(&s.client.address, || {
+        assert!(s
+            .env
+            .storage()
+            .persistent()
+            .has(&DataKey::BySender(sender.clone())));
+        assert_eq!(
+            s.env
+                .storage()
+                .persistent()
+                .get::<_, u32>(&DataKey::BySenderMigrationCursor(sender.clone())),
+            Some(100)
+        );
+    });
+
+    let page = s.client.streams_by_sender(&sender, &95, &10);
+    assert_eq!(page.ids.len(), 10);
+    assert_eq!(page.ids.get(0).unwrap(), 95);
+    assert_eq!(page.ids.get(9).unwrap(), 104);
+
+    assert_eq!(s.client.migrate_sender_index(&sender, &10), 250);
+    s.env.as_contract(&s.client.address, || {
+        assert!(!s
+            .env
+            .storage()
+            .persistent()
+            .has(&DataKey::BySender(sender.clone())));
+    });
+}
+
+#[test]
+fn append_during_partial_sender_migration_preserves_order() {
+    let s = Setup::new();
+    let sender = Address::generate(&s.env);
+
+    s.env.as_contract(&s.client.address, || {
+        let mut legacy = soroban_sdk::Vec::new(&s.env);
+        for id in 0..150_u64 {
+            legacy.push_back(id);
+        }
+        s.env
+            .storage()
+            .persistent()
+            .set(&DataKey::BySender(sender.clone()), &legacy);
+
+        crate::index::append_sender_index(&s.env, &sender, 999);
+    });
+
+    assert_eq!(s.client.stream_count_by_sender(&sender), 151);
+
+    let tail = s.client.streams_by_sender(&sender, &145, &10);
+    assert_eq!(tail.ids.len(), 6);
+    assert_eq!(tail.ids.get(0).unwrap(), 145);
+    assert_eq!(tail.ids.get(4).unwrap(), 149);
+    assert_eq!(tail.ids.get(5).unwrap(), 999);
+
+    assert_eq!(s.client.migrate_sender_index(&sender, &10), 151);
+    let tail_after = s.client.streams_by_sender(&sender, &145, &10);
+    assert_eq!(tail_after, tail);
 }
 
 // ── Issue #204: cancel_batch_streams ─────────────────────────────────────────
@@ -373,7 +469,7 @@ fn index_ttl_env() -> (Env, DripFactoryClient<'static>, Address) {
     });
 
     let governor = Address::generate(&env);
-    let wasm_hash = BytesN::from_array(&env, &[0u8; 32]);
+    let wasm_hash = BytesN::from_array(&env, &[1u8; 32]);
     let contract_id = env.register_contract(None, DripFactory);
     let client = DripFactoryClient::new(&env, &contract_id);
     client.initialize(&wasm_hash, &governor);

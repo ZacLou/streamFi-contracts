@@ -38,7 +38,7 @@ fn cancel(env: Env, caller: Address) -> Result<(), Error>
 fn pause(env: Env, caller: Address) -> Result<(), Error>
 fn resume(env: Env, caller: Address) -> Result<(), Error>
 fn top_up(env: Env, caller: Address, amount: i128) -> Result<(), Error>
-fn clawback(env: Env, caller: Address) -> Result<i128, Error>
+fn clawback(env: Env, caller: Address) -> Result<i128, Error> // rejected while paused; resume() first
 
 // Extend end_time by extra_time_seconds, pulling the exact rate-implied deposit from the sender
 fn extend_duration(env: Env, caller: Address, extra_time_seconds: u64) -> Result<(), Error>
@@ -78,7 +78,21 @@ fn storage_version(env: Env) -> u32
 
 **Operator delegation:**
 
-A sender can delegate `pause`, `resume`, `cancel`, `top_up`, `clawback`, and `extend_duration` (and by extension `top_up_and_extend`) to another address via `set_operator`, without handing over `sender` itself. Only the sender may call `set_operator`/`revoke_operator`; the operator cannot re-delegate. `withdraw` (recipient-only) and `transfer_recipient` (sender-only) are unaffected by delegation. See `docs/architecture.md` for the full write-up.
+A sender can delegate a subset of sender-level actions to another address via `set_operator`, without handing over `sender` itself. Only the sender may call `set_operator`/`revoke_operator`; the operator cannot re-delegate.
+
+| Action | Caller allowed |
+|---|---|
+| `pause` | sender **or** operator |
+| `resume` | sender **or** operator |
+| `cancel` | sender **or** operator |
+| `top_up` | sender **or** operator (funds come from the caller) |
+| `extend_duration` | sender **or** operator (funds come from the caller) |
+| `top_up_and_extend` | sender **or** operator (funds come from the caller) |
+| `clawback` | sender **or** operator |
+| `set_operator` | **sender only** |
+| `revoke_operator` | **sender only** |
+
+`withdraw`, `force_cancel`, and `transfer_recipient` are recipient-level actions and are never available to the operator. See `docs/architecture.md` for the full write-up.
 
 **Events emitted:**
 
