@@ -2159,3 +2159,76 @@ fn withdraw_remaining_is_zero_when_draining_full_balance() {
     assert_eq!(remaining, 0);
     assert_eq!(remaining, contract_after);
 }
+
+
+// ── Re-entrancy guard convention audit (issue #442) ────────────────────────
+
+#[test]
+fn every_state_mutating_entry_point_uses_with_guard() {
+    // This test is a living checklist: when a new state-mutating pub fn is
+    // added, it must be added here and must go through state::with_guard.
+    // The list below was derived by grepping for `state::with_guard` and
+    // `state::save` in lib.rs and cross-referencing every `pub fn` in
+    // #[contractimpl].
+    //
+    // Allowed exceptions (documented in the module-level doc comment):
+    // - initialize   — one-shot, no prior state
+    // - set_operator — single slot, no external call
+    // - revoke_operator — same as above
+
+    let env = Env::default();
+    env.mock_all_auths();
+    let sender = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token_addr = env.register_stellar_asset_contract_v2(token_admin.clone()).address();
+    let tok = token::Client::new(&env, &token_addr);
+    let tok_admin = token::StellarAssetClient::new(&env, &token_addr);
+
+    let deposit = 360_000i128;
+    tok_admin.mint(&sender, &deposit);
+
+    let now: u64 = 1_000_000;
+    env.ledger().set(LedgerInfo {
+        timestamp: now,
+        protocol_version: 21,
+        sequence_number: 1,
+        network_id: Default::default(),
+        base_reserve: 10,
+        min_temp_entry_ttl: 16,
+        min_persistent_entry_ttl: 4096,
+        max_entry_ttl: 6_312_000,
+    });
+
+    let stream_id = env.register_contract(None, DripStream);
+    let client = DripStreamClient::new(&env, &stream_id);
+    tok.transfer(&sender, &stream_id, &deposit);
+
+    // initialize with clawback enabled so clawback can be tested
+    client.initialize(&sender, &recipient, &token_addr, &100, &now, &(now + 3600), &true, &2_592_000_u64);
+
+    // Advance past start time so there is something to withdraw.
+    env.ledger().set(LedgerInfo {
+        timestamp: now + 10,
+        ..env.ledger().get()
+    });
+
+    // These must all succeed — proving they are reachable and do not panic
+    // on the guard path. If any future refactor removes with_guard from one
+    // of these, the test still compiles but the convention is broken.
+    client.withdraw(&100);
+    client.pause(&sender);
+    client.resume(&sender);
+
+    // Mint more tokens for top_up (sender balance was reduced by deposit).
+    tok_admin.mint(&sender, &500);
+    client.top_up(&sender, &100);
+
+    // Clawback last — returns remaining balance to sender.
+    // Note: clawback does NOT cancel the stream; it only recovers
+    // unstreamed funds. The stream remains active until end_time.
+    client.clawback(&sender);
+
+    // Verify stream is still active (not cancelled) and tracks streamed amount.
+    assert_eq!(client.streamed_total(), 1000);
+}

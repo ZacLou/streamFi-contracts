@@ -44,6 +44,20 @@ fn require_sender_or_operator(env: &Env, caller: &Address, sender: &Address) -> 
     }
 }
 
+/// Re-entrancy guard audit (issue #442)
+///
+/// Every state-mutating `#[contractimpl]` entry point below goes through
+/// `state::with_guard`, which acquires a depth-counter lock before calling
+/// the internal `_method`. The only exceptions are:
+///
+/// - `initialize` — one-shot init, no prior state to re-enter.
+/// - `set_operator` / `revoke_operator` — single storage slot write, no
+///   external calls and therefore no re-entrancy surface.
+///
+/// This invariant is enforced by the convention that any method whose name
+/// starts with `_` (e.g. `_withdraw`, `_cancel`) is private and must only be
+/// called from inside `with_guard`. A proc-macro or grep-based CI check can
+/// verify this mechanically.
 #[contractimpl]
 impl DripStream {
     /// Called once by the factory after deployment.
