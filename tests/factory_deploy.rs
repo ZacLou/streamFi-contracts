@@ -854,9 +854,7 @@ fn create_stream_charges_and_routes_protocol_fee() {
         &false,
     );
 
-    let stream_addr = client
-        .stream_address(&(client.stream_count() - 1))
-        .unwrap();
+    let stream_addr = client.stream_address(&(client.stream_count() - 1)).unwrap();
 
     // 1) Sender paid deposit + fee (fully drained).
     assert_eq!(tok.balance(&sender), 0);

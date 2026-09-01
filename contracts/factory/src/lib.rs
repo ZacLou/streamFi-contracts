@@ -241,9 +241,7 @@ impl DripFactory {
             .ok_or(Error::ArithmeticOverflow)?
             .checked_div(10_000)
             .ok_or(Error::ArithmeticOverflow)?;
-        let total_funding: i128 = deposit
-            .checked_add(fee)
-            .ok_or(Error::ArithmeticOverflow)?;
+        let total_funding: i128 = deposit.checked_add(fee).ok_or(Error::ArithmeticOverflow)?;
         let fee_recipient = config.fee_recipient.clone();
 
         // ── Reentrancy guard ─────────────────────────────────────────────
