@@ -440,10 +440,20 @@ impl DripFactory {
 
     /// Returns the deployed contract address for `stream_id`, or `None` if the
     /// ID was never created (or the stream has been archived from storage).
+    ///
+    /// Extends the entry's persistent TTL on read so frequently-resolved
+    /// streams stay alive without relying solely on the bounded TTL walker
+    /// (`bump_persistent_bucket`), which can only touch `BATCH_LIMIT` (8)
+    /// entries per maintenance call — insufficient for a large registry.
     pub fn stream_address(env: Env, stream_id: u64) -> Option<Address> {
-        env.storage()
-            .persistent()
-            .get(&DataKey::StreamAddr(stream_id))
+        let key = DataKey::StreamAddr(stream_id);
+        let addr: Option<Address> = env.storage().persistent().get(&key);
+        if addr.is_some() {
+            env.storage()
+                .persistent()
+                .extend_ttl(&key, ttl::THRESHOLD, ttl::EXTEND_TO);
+        }
+        addr
     }
 
     /// Permissionlessly advance migration of one sender's legacy index into

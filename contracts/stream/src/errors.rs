@@ -22,7 +22,10 @@ pub enum Error {
     ReentrancyForbidden = 16,
     OperatorAlreadySet = 17,
     NotInitialized = 18,
+    /// The recipient is invalid (e.g. the all-zero Stellar account address, or identical to `sender`).
     InvalidRecipient = 19,
+    /// The stream's `start_time` is in the past at initialization.
     BackdatedStream = 20,
+    /// The stream has accrued tokens but is not funded enough to cover the requested withdrawal.
     StreamUnderfunded = 21,
 }
