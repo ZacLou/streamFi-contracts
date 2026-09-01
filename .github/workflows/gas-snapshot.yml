@@ -1,0 +1,34 @@
+name: Gas Snapshot
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  gas-snapshot:
+    name: Check gas snapshot
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build WASM contracts
+        run: |
+          cargo build -p drip-stream   --target wasm32-unknown-unknown --release
+          cargo build -p drip-factory  --target wasm32-unknown-unknown --release
+          cargo build -p drip-governor --target wasm32-unknown-unknown --release
+
+      - name: Check gas snapshot
+        run: cargo test -p conduit-integration-tests --test gas_snapshot

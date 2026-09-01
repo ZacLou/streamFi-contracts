@@ -42,6 +42,7 @@ pub enum Error {
     InvalidDuration = 27,
     /// The token address is invalid (e.g. the all-zero Stellar account address).
     InvalidToken = 28,
+    /// The stream start is too far in the future for the protocol's allowed scheduling window.
     /// `start_time` is further ahead than the protocol's maximum stream
     /// duration allows.
     ///
@@ -50,4 +51,14 @@ pub enum Error {
     /// is disabled there is no way to recover the funds before the stream
     /// starts.
     StartTimeTooFarInFuture = 29,
+    /// `upgrade` was called with a WASM hash whose storage layout version
+    /// does not match `DataKey::FactoryStorageVersion`. Prevents swapping in
+    /// code that assumes an incompatible shape for persisted state
+    /// (`StreamCount`, `StreamAddr`, the paged indices, etc.) without an
+    /// explicit migration.
+    StorageVersionMismatch = 30,
+    /// `initialize` was given the all-zero Stellar account address for the
+    /// governor, which would leave every `create_stream` call pointing at a
+    /// non-existent governor contract.
+    InvalidGovernor = 31,
 }

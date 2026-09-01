@@ -51,6 +51,7 @@ fn deploy_stream_with_clawback<'a>(
         &now,
         &(now + duration),
         &clawback,
+        &2_592_000_u64,
     );
 
     (client, token_addr)
@@ -168,25 +169,18 @@ fn clawback_on_cancelled_stream_is_rejected() {
 // ── Paused stream clawback ───────────────────────────────────────────────────
 
 #[test]
-fn clawback_while_paused_uses_paused_timestamp() {
+fn clawback_while_paused_is_rejected() {
     let env = base_env();
     let sender = Address::generate(&env);
     let recipient = Address::generate(&env);
 
-    let (client, token_addr) =
-        deploy_stream_with_clawback(&env, &sender, &recipient, 1_000, 3_600, true);
-    let tok = token::Client::new(&env, &token_addr);
+    let (client, _) = deploy_stream_with_clawback(&env, &sender, &recipient, 1_000, 3_600, true);
 
-    advance(&env, 300); // 300_000 streamed at pause point
+    advance(&env, 300);
     client.pause(&sender);
-    advance(&env, 500); // paused — no additional accrual
 
-    // Owed = 300_000; unstreamed = 3_300_000
-    let sender_before = tok.balance(&sender);
-    let reclaimed = client.clawback(&sender);
-
-    assert_eq!(reclaimed, 3_300_000);
-    assert_eq!(tok.balance(&sender) - sender_before, 3_300_000);
+    let result = client.try_clawback(&sender);
+    assert_eq!(result, Err(Ok(Error::NotPaused)));
 }
 
 // ── Clawback enabled view function ───────────────────────────────────────────

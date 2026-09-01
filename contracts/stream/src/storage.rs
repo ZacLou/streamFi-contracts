@@ -35,10 +35,11 @@ pub enum DataKey {
     /// Replaces the 11 individual keys above for new writes — loaded in one
     /// storage read instead of eleven.
     Config,
-    /// Monotonic identifier attached to every contract event.
+    /// Legacy standalone copy of the current event sequence value.
     ///
-    /// Consumers compare this value with the last sequence they processed
-    /// after reconnecting so missing ledger events cannot go unnoticed.
+    /// New writes persist this as part of `StreamInfo`/`Config` so it survives
+    /// consolidated-key migrations. Older streams may still have this key until
+    /// the first `save()` migrates them to the single-key layout.
     EventSequence,
     /// Lock for re-entrancy protection and concurrency control.
     Guard,
@@ -52,6 +53,16 @@ pub enum DataKey {
     /// cancel, clawback, top_up, extend_duration) on behalf of the sender.
     /// Absent key means no operator has been delegated.
     Operator,
+    /// Seconds a stream must remain paused before `force_cancel` becomes
+    /// callable by the recipient. Set once at `initialize()` from the
+    /// value `DripFactory::create_stream` read from `GovernorConfig` at
+    /// deploy time (governance-configurable per deployment; see
+    /// `DripGovernor::set_force_cancel_pause_threshold`). Stored on the
+    /// stream itself — rather than read cross-contract on every
+    /// `force_cancel` call — because ADR-001 keeps this contract's hot
+    /// path free of cross-contract calls; a stream deployed directly
+    /// (bypassing the factory) falls back to the historical 30-day default.
+    ForceCancelPauseThresholdSecs,
 }
 
 #[contracttype]
@@ -66,6 +77,7 @@ pub struct StreamInfo {
     pub withdrawn: i128,
     pub paused_at: u64,
     pub flags: u32,
+    pub event_sequence: u64,
 }
 
 impl StreamInfo {
@@ -79,5 +91,10 @@ impl StreamInfo {
 
     pub fn is_clawback_enabled(&self) -> bool {
         (self.flags & FLAG_CLAWBACK_ENABLED) != 0
+    }
+
+    /// Mark the stream as cancelled, setting the correct flag bit.
+    pub fn mark_cancelled(&mut self) {
+        self.flags |= FLAG_CANCELLED;
     }
 }
