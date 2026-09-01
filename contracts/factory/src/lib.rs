@@ -228,6 +228,24 @@ impl DripFactory {
         // ── Governor-controlled bounds ──────────────────────────────────────
         governance::enforce_bounds(config, rate_per_sec, start_time, end_time, now)?;
 
+        // ── Protocol protocol fee (#351) ───────────────────────────────────
+        // The quoted `protocol_fee_bps()` is taken as a surcharge on the
+        // deposit at creation: the creator funds `deposit + fee`, the stream
+        // receives the full `deposit` (so existing funding and settlement
+        // accounting is untouched), and `fee` is forwarded to the governed
+        // `fee_recipient`. This is what makes the governed fee real instead of
+        // dead configuration. Failing closed on `ArithmeticOverflow` keeps the
+        // surcharge from ever silently under-funding a stream.
+        let fee: i128 = deposit
+            .checked_mul(config.fee_bps as i128)
+            .ok_or(Error::ArithmeticOverflow)?
+            .checked_div(10_000)
+            .ok_or(Error::ArithmeticOverflow)?;
+        let total_funding: i128 = deposit
+            .checked_add(fee)
+            .ok_or(Error::ArithmeticOverflow)?;
+        let fee_recipient = config.fee_recipient.clone();
+
         // ── Reentrancy guard ─────────────────────────────────────────────
         // `token` is caller-supplied and may not be a well-behaved SEP-41
         // asset. A malicious `transfer` implementation could call back into
@@ -249,18 +267,26 @@ impl DripFactory {
         // ── All validation passed — safe to touch state now ──────────────
         ttl::bump_instance(&env);
 
-        // ── Pull deposit from sender ──────────────────────────────────────
+        // ── Pull deposit + protocol fee from sender ──────────────────────
         // Using the aliased `tok` to avoid any future shadowing issues.
         let tk = tok::Client::new(&env, &token);
         let factory_addr = env.current_contract_address();
         let factory_balance_before = tk.balance(&factory_addr);
-        tk.transfer(&sender, &factory_addr, &deposit);
-        // Confirm the deposit actually arrived — a non-conforming token
+        tk.transfer(&sender, &factory_addr, &total_funding);
+        // Confirm the funding actually arrived — a non-conforming token
         // could return successfully from `transfer` without moving funds.
-        if tk.balance(&factory_addr) != factory_balance_before + deposit {
+        if tk.balance(&factory_addr) != factory_balance_before + total_funding {
             env.storage().instance().set(&DataKey::CreateLock, &false);
             return Err(Error::DepositTransferFailed);
         }
+
+        // Route the protocol fee to the governed recipient before the stream
+        // is funded. The fee is part of the same transaction, so the transfer
+        // either commits or the whole creation rolls back.
+        if fee > 0 {
+            tk.transfer(&factory_addr, &fee_recipient, &fee);
+        }
+        events::protocol_fee_charged(&env, &fee_recipient, fee);
 
         // ── Assign stream ID ─────────────────────────────────────────────
         let stream_count: u64 = env

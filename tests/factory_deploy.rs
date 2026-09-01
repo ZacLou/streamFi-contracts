@@ -9,7 +9,7 @@ use drip_factory::{DripFactory, DripFactoryClient, Error};
 use drip_governor::{DripGovernor, DripGovernorClient};
 use soroban_sdk::{
     testutils::{storage::Instance as _, Address as _, Ledger, LedgerInfo},
-    token, Address, BytesN, Env,
+    token, Address, BytesN, Env, TryIntoVal,
 };
 
 fn base_env() -> Env {
@@ -777,4 +777,114 @@ fn upgrade_stream_wasm_rejects_all_zero_hash() {
     let zero_hash = BytesN::from_array(&env, &[0u8; 32]);
     let result = client.try_upgrade_stream_wasm(&zero_hash);
     assert_eq!(result, Err(Ok(Error::InvalidWasmHash)));
+}
+
+// ── Issue #351: protocol fee is charged at creation ─────────────────────────
+//
+// The governed `fee_bps` / `fee_recipient` from DripGovernor were stored and
+// read (`protocol_fee_bps()`) but never applied. create_stream now charges the
+// fee as a surcharge on the deposit: the sender funds `deposit + fee`, the
+// stream receives the full `deposit`, and `fee` is routed to `fee_recipient`.
+//
+// This needs a real stream WASM (a successful create_stream deploys one), so
+// it is #[ignore]d like the other deployment-path tests. Run with:
+//   cargo build -p drip-stream --target wasm32-unknown-unknown --release
+//   cargo test --test factory_deploy -- --ignored --nocapture
+#[test]
+#[ignore = "requires stream WASM built via cargo build -p drip-stream --target wasm32-unknown-unknown --release"]
+fn create_stream_charges_and_routes_protocol_fee() {
+    use soroban_sdk::testutils::Events as _;
+
+    let env = base_env();
+    env.mock_all_auths();
+
+    // Deploy a dedicated factory + governor so we control fee_recipient and can
+    // read it back from governor config for the assertion.
+    let factory_id = env.register_contract(None, DripFactory);
+    let governor_id = env.register_contract(None, DripGovernor);
+
+    let authority = Address::generate(&env);
+    let fee_recipient = Address::generate(&env);
+    let governor_client = DripGovernorClient::new(&env, &governor_id);
+    governor_client.initialize(&authority, &fee_recipient, &factory_id);
+
+    let client = DripFactoryClient::new(&env, &factory_id);
+    let dummy_hash = BytesN::from_array(&env, &[0u8; 32]);
+    client.initialize(&dummy_hash, &governor_id);
+
+    // Wire a real stream WASM into the factory.
+    let wasm_path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/target/wasm32-unknown-unknown/release/drip_stream.wasm"
+    );
+    let wasm = std::fs::read(wasm_path).expect("build the stream WASM first (see docstring)");
+    let wasm_hash = env.deployer().upload_contract_wasm(wasm.as_slice());
+    env.as_contract(&client.address, || {
+        env.storage()
+            .instance()
+            .set(&drip_factory::storage::DataKey::StreamWasmHash, &wasm_hash);
+    });
+
+    let sender = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let now = env.ledger().timestamp();
+
+    // Fresh token; default governor fee_bps = 30 (0.30%).
+    let fee_bps = governor_client.config().fee_bps;
+    let deposit: i128 = 360_000;
+    let fee = deposit * fee_bps as i128 / 10_000;
+
+    let admin = Address::generate(&env);
+    let token_addr = env
+        .register_stellar_asset_contract_v2(admin.clone())
+        .address();
+    let tok = token::Client::new(&env, &token_addr);
+    let token_admin = token::StellarAssetClient::new(&env, &token_addr);
+    // Fund the sender for deposit + fee so the surcharge can be collected.
+    token_admin.mint(&sender, &(deposit + fee));
+
+    client.create_stream(
+        &sender,
+        &recipient,
+        &token_addr,
+        &deposit,
+        &100,
+        &now,
+        &(now + 3_600),
+        &false,
+    );
+
+    let stream_addr = client
+        .stream_address(&(client.stream_count() - 1))
+        .unwrap();
+
+    // 1) Sender paid deposit + fee (fully drained).
+    assert_eq!(tok.balance(&sender), 0);
+
+    // 2) Stream received the full deposit — funding accounting is unchanged.
+    assert_eq!(tok.balance(&stream_addr), deposit);
+
+    // 3) fee_recipient received exactly `deposit * fee_bps / 10_000`.
+    assert_eq!(tok.balance(&fee_recipient), fee);
+
+    // 4) The factory's public view quotes the fee that is now actually charged.
+    assert_eq!(client.protocol_fee_bps(), fee_bps);
+
+    // 5) A fee event was emitted (recipient, amount).
+    let mut fee_events = 0;
+    for e in env.events().all().into_iter() {
+        if e.0 != client.address || e.1.len() != 2 {
+            continue;
+        }
+        let sym: Option<soroban_sdk::Symbol> = e.1.get(0).and_then(|v| v.try_into_val(&env).ok());
+        let topic1: Option<Address> = e.1.get(1).and_then(|v| v.try_into_val(&env).ok());
+        let data: Option<i128> = e.2.try_into_val(&env).ok();
+        if sym == Some(soroban_sdk::symbol_short!("fee"))
+            && topic1 == Some(fee_recipient.clone())
+            && data == Some(fee)
+        {
+            fee_events += 1;
+        }
+    }
+    assert_eq!(fee_events, 1, "expected exactly one fee event");
 }
