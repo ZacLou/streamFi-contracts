@@ -171,6 +171,29 @@ fn pause_freezes_withdrawable() {
     assert_eq!(s.client.withdrawable(), before_pause); // unchanged
 }
 
+/// Regression for #350: a stream that is left paused must keep freezing
+/// accrual at `paused_at` even after ledger time passes `end_time`. Before
+/// this fix the `end_time` clamp was evaluated before the pause clamp, so once
+/// `now > end_time` a never-resumed pause reported the full contracted amount,
+/// letting the recipient withdraw everything (pause fully defeated) and
+/// understating the sender's refund on cancel.
+#[test]
+fn paused_stream_does_not_accrue_past_end_time() {
+    // 200s stream: start = 1_000_000, end = 1_000_200.
+    let s = Setup::new(100, 200, false);
+    s.advance_secs(50); // 50s elapsed → 5_000 owed
+    s.client.pause(&s.sender); // paused_at = 1_000_050
+
+    // Advance well past end_time (1_000_200 → now 1_000_550) without resuming.
+    s.advance_secs(500);
+    assert!(s.env.ledger().timestamp() > s.client.info().end_time);
+    assert!(s.client.info().is_paused());
+
+    // Still frozen at the 5_000 owed at pause time — NOT the full 20_000.
+    assert_eq!(s.client.withdrawable(), 5_000);
+    assert_eq!(s.client.streamed_total(), 5_000);
+}
+
 #[test]
 fn resume_continues_streaming() {
     let s = Setup::new(100, 3600, false);
