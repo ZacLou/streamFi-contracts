@@ -22,6 +22,8 @@ fn test_oracle_concurrency_locking() {
         decimals: 6,
         asset_peg: 0,
         max_staleness: 3600,
+        max_price: 0,
+        min_submit_interval: 0,
     };
     client.configure_oracle(&admin, &config);
     client.submit_price(&admin, &50_000_000); // 50.00 USD
@@ -67,6 +69,8 @@ fn test_concurrent_stress_simulation() {
         decimals: 6,
         asset_peg: 0,
         max_staleness: 3600,
+        max_price: 0,
+        min_submit_interval: 0,
     };
     client.configure_oracle(&admin, &config);
     client.submit_price(&admin, &50_000_000);
@@ -94,6 +98,8 @@ fn test_precision_safe_math() {
         decimals: 6,
         asset_peg: 0,
         max_staleness: 3600,
+        max_price: 0,
+        min_submit_interval: 0,
     };
     client.configure_oracle(&admin, &config);
 
@@ -127,6 +133,8 @@ fn test_staleness_check() {
         decimals: 6,
         asset_peg: 0,
         max_staleness: 60, // 1 minute
+        max_price: 0,
+        min_submit_interval: 0,
     };
     client.configure_oracle(&admin, &config);
 

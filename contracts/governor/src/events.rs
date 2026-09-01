@@ -103,19 +103,30 @@ pub fn set_fee_recipient(
     );
 }
 
-pub fn set_min_duration(env: &Env, caller: &Address, seconds: u64) {
-    env.events()
-        .publish((symbol_short!("min_dur"), caller.clone()), seconds);
+pub fn set_min_duration(env: &Env, caller: &Address, old_seconds: u64, new_seconds: u64) {
+    env.events().publish(
+        (symbol_short!("min_dur"), caller.clone()),
+        (old_seconds, new_seconds),
+    );
 }
 
-pub fn set_max_rate(env: &Env, caller: &Address, max_rate: i128) {
-    env.events()
-        .publish((symbol_short!("max_rate"), caller.clone()), max_rate);
+pub fn set_max_rate(env: &Env, caller: &Address, old_max_rate: i128, new_max_rate: i128) {
+    env.events().publish(
+        (symbol_short!("max_rate"), caller.clone()),
+        (old_max_rate, new_max_rate),
+    );
 }
 
-pub fn set_max_duration(env: &Env, caller: &Address, seconds: u64) {
+pub fn set_max_duration(env: &Env, caller: &Address, old_seconds: u64, new_seconds: u64) {
+    env.events().publish(
+        (symbol_short!("max_dur"), caller.clone()),
+        (old_seconds, new_seconds),
+    );
+}
+
+pub fn set_force_cancel_pause_threshold(env: &Env, caller: &Address, seconds: u64) {
     env.events()
-        .publish((symbol_short!("max_dur"), caller.clone()), seconds);
+        .publish((symbol_short!("fc_pause"), caller.clone()), seconds);
 }
 
 pub fn paused(env: &Env, caller: &Address, paused_at: u64) {

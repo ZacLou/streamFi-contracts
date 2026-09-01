@@ -141,34 +141,28 @@ fn append_index_entry(
     extend_page_ttls(env, &mut make_page_key, new_count);
 }
 
-/// Walk every populated page of a paginated index and extend its persistent
-/// TTL.
+/// Walk a bounded number of pages of a paginated index and extend their
+/// persistent TTL.
 ///
-/// The index only extends a page's TTL when that specific page is written
+/// The index naturally extends a page's TTL when that specific page is written
 /// (`write_page` from [`append_index_entry`]) or read (`collect_page` in the
-/// window [`read_index`] touches). Once a page fills it is never written
-/// again, and it is only read when a query lands in its range. A UI that
-/// browses "most recent first" only touches the newest page, so the oldest
-/// full pages are neither written nor read and eventually archive. After an
-/// older page archives, `streams_by_sender` / `streams_by_recipient` silently
-/// return fewer IDs than `stream_count_by_sender` /
-/// `stream_count_by_recipient` report: the archived page's `get` yields an
-/// empty `Vec`, which the `page_offset >= page_len` branch in [`read_index`]
-/// then skips straight past.
+/// window [`read_index`] touches). However, pages outside typical query windows
+/// (e.g. oldest pages) might archive if not explicitly refreshed.
 ///
-/// Calling this from every read/append keeps the whole index alive at a cost
-/// linear in the number of pages for that sender/recipient. `has` gating is
-/// defensive: if a page is already archived (or otherwise missing) `extend_ttl`
-/// could not restore it, so it is skipped rather than touched on every call.
+/// To prevent O(N) TTL refresh costs on every read, this walk is amortised:
+/// it refreshes at most 3 pages per call, using the current ledger sequence
+/// to pseudo-randomly distribute the work over time. `has` gating is
+/// defensive: if a page is already archived it is skipped rather than touched.
 fn extend_page_ttls(env: &Env, make_page_key: &mut impl FnMut(u32) -> DataKey, count: u32) {
     if count == 0 {
         return;
     }
-    // `count` is the number of entries; the final entry lives on page
-    // (`count` - 1) / PAGE_SIZE. `saturating_sub` keeps the divide well-formed
-    // (the `count == 0` case is already returned above).
-    let last_page = count.saturating_sub(1) / PAGE_SIZE;
-    for page_index in 0..=last_page {
+
+    let num_pages = (count.saturating_sub(1) / PAGE_SIZE).saturating_add(1);
+    let start_page = env.ledger().sequence() % num_pages;
+
+    for i in 0..3 {
+        let page_index = (start_page.saturating_add(i)) % num_pages;
         let key = make_page_key(page_index);
         if env.storage().persistent().has(&key) {
             extend_ttl(env, &key);
@@ -360,12 +354,12 @@ pub fn migrate_recipient_index(env: &Env, recipient: Address, max_pages: u32) ->
         .unwrap_or_else(|| env.storage().persistent().get(&count_key).unwrap_or(0))
 }
 
-pub fn streams_by_sender(env: &Env, sender: Address, offset: u32, limit: u32) -> Vec<u64> {
+pub fn streams_by_sender(env: &Env, sender: Address, offset: u32, limit: u32) -> StreamPage {
     let count_key = DataKey::BySenderCount(sender.clone());
     let legacy_key = DataKey::BySender(sender.clone());
     let cursor_key = DataKey::BySenderMigrationCursor(sender.clone());
     let legacy_count_key = DataKey::BySenderLegacyCount(sender.clone());
-    read_index(
+    let ids = read_index(
         env,
         &count_key,
         &legacy_key,
@@ -384,7 +378,7 @@ pub fn streams_by_recipient(env: &Env, recipient: Address, offset: u32, limit: u
     let legacy_key = DataKey::ByRecipient(recipient.clone());
     let cursor_key = DataKey::ByRecipientMigrationCursor(recipient.clone());
     let legacy_count_key = DataKey::ByRecipientLegacyCount(recipient.clone());
-    read_index(
+    let ids = read_index(
         env,
         &count_key,
         &legacy_key,

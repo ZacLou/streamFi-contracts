@@ -43,6 +43,7 @@ pub fn try_load(env: &Env) -> Result<StreamInfo, Error> {
         withdrawn: s.get(&DataKey::Withdrawn).unwrap_or(0),
         paused_at: s.get(&DataKey::PausedAt).unwrap_or(0),
         flags,
+        event_sequence: s.get(&DataKey::EventSequence).unwrap_or(0),
     })
 }
 
@@ -62,7 +63,7 @@ pub fn load(env: &Env) -> StreamInfo {
 /// (`withdraw`/`pause`/`resume`/`cancel`/`top_up`/`extend_duration`) for data
 /// no code path reads. They are removed once, on the first `save()` of a
 /// pre-consolidation stream, after which `save()` writes only `Config`.
-const LEGACY_STATE_KEYS: [DataKey; 11] = [
+const LEGACY_STATE_KEYS: [DataKey; 12] = [
     DataKey::Sender,
     DataKey::Recipient,
     DataKey::Token,
@@ -74,6 +75,7 @@ const LEGACY_STATE_KEYS: [DataKey; 11] = [
     DataKey::Flags,
     DataKey::ClawbackEnabled,
     DataKey::Cancelled,
+    DataKey::EventSequence,
 ];
 
 /// Persist the entire stream state in a single storage write.

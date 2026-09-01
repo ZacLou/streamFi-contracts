@@ -96,7 +96,7 @@ fn deploy_factory_with_governor(env: &Env) -> DripFactoryClient<'_> {
     let governor_client = DripGovernorClient::new(env, &governor_id);
     governor_client.initialize(&authority, &fee_recipient, &factory_id);
 
-    let dummy_hash = BytesN::from_array(env, &[0u8; 32]);
+    let dummy_hash = BytesN::from_array(env, &[1u8; 32]);
     let client = DripFactoryClient::new(env, &factory_id);
     client.initialize(&dummy_hash, &governor_id);
     client
@@ -289,6 +289,7 @@ fn deploy_funded_stream_clawback<'a>(
         &now,
         &(now + duration),
         &clawback_enabled,
+        &2_592_000_u64,
     );
     (client, token_addr)
 }

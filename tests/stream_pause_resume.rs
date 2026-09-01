@@ -51,6 +51,7 @@ fn deploy_stream<'a>(
         &now,
         &(now + duration),
         &false,
+        &2_592_000_u64,
     );
 
     (client, token_addr)
@@ -140,6 +141,20 @@ fn resume_on_running_stream_is_rejected() {
     let (client, _) = deploy_stream(&env, &sender, &recip, 100, 3_600);
     let result = client.try_resume(&sender); // stream is not paused
     assert_eq!(result, Err(Ok(Error::NotPaused)));
+}
+
+#[test]
+fn resume_after_safe_pause_window_is_rejected() {
+    let env = base_env();
+    let sender = Address::generate(&env);
+    let recip = Address::generate(&env);
+    let (client, _) = deploy_stream(&env, &sender, &recip, 100, 3_600);
+
+    client.pause(&sender);
+    advance(&env, 2_592_001);
+
+    let result = client.try_resume(&sender);
+    assert_eq!(result, Err(Ok(Error::PauseThresholdNotMet)));
 }
 
 // ── Recipient can withdraw while paused ──────────────────────────────────────
