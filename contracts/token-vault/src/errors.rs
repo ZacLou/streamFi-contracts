@@ -1,7 +1,8 @@
 use soroban_sdk::contracterror;
 
 #[contracterror]
-#[derive(Copy, Clone, Eq, PartialEq, Debug)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[repr(u32)]
 pub enum Error {
     InvalidAmount = 1,
     ArithmeticOverflow = 2,
@@ -18,4 +19,14 @@ pub enum Error {
     NotInitialized = 8,
     /// `initialize` was called on a vault that is already initialized.
     AlreadyInitialized = 9,
+    /// A provided argument was invalid (e.g. proposing a zero-address owner).
+    InvalidParam = 10,
+    /// `accept_owner` was called but there is no pending owner to accept.
+    NoPendingOwner = 11,
+    /// `accept_owner` was called by an address that is not the pending owner.
+    NotPendingOwner = 12,
+    /// The token transfer did not move exactly the expected amount for `deposit`.
+    DepositTransferFailed = 13,
+    /// The token transfer did not move exactly the expected amount for `withdraw`.
+    WithdrawTransferFailed = 14,
 }

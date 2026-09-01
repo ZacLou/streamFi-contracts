@@ -11,7 +11,10 @@ use soroban_sdk::{
     token, Address, Env, IntoVal, TryIntoVal,
 };
 
-use crate::{storage::DataKey, DripStream, DripStreamClient, Error};
+use crate::{
+    storage::{DataKey, StreamInfo, FLAG_CANCELLED, FLAG_CLAWBACK_ENABLED, FLAG_PAUSED},
+    DripStream, DripStreamClient, Error,
+};
 
 /// Deploy a mock token and a DripStream, returning both clients and
 /// the sender/recipient addresses.
@@ -72,6 +75,7 @@ impl Setup {
             &now,                   // start_time = now
             &(now + duration_secs), // end_time
             &clawback,
+            &2_592_000_u64,
         );
 
         // Leak the env so we can return 'static references — acceptable in tests.
@@ -124,6 +128,14 @@ fn withdraw_correct_after_elapsed() {
 }
 
 #[test]
+fn total_streamed_matches_streamed_total() {
+    let s = Setup::new(1_000, 3_600, false);
+    s.advance_secs(100);
+    assert_eq!(s.client.total_streamed(), 100_000);
+    assert_eq!(s.client.total_streamed(), s.client.streamed_total());
+}
+
+#[test]
 fn withdraw_capped_at_available() {
     let s = Setup::new(100, 3600, false);
     s.advance_secs(50);
@@ -147,6 +159,35 @@ fn withdrawable_stops_at_end_time() {
     assert_eq!(s.client.withdrawable(), 10_000);
 }
 
+#[test]
+fn transfer_recipient_rejects_zero_address() {
+    let s = Setup::new(100, 3600, false);
+    let zero = Address::from_string(&soroban_sdk::String::from_str(
+        &s.env,
+        "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+    ));
+
+    let result = s.client.try_transfer_recipient(&zero);
+    assert_eq!(result, Err(Ok(Error::InvalidRecipient)));
+}
+
+#[test]
+fn transfer_recipient_rejects_same_recipient() {
+    let s = Setup::new(100, 3600, false);
+
+    let result = s.client.try_transfer_recipient(&s.recipient);
+    assert_eq!(result, Err(Ok(Error::InvalidRecipient)));
+}
+
+#[test]
+fn transfer_recipient_rejects_ended_stream() {
+    let s = Setup::new(100, 100, false);
+    s.advance_secs(200);
+
+    let result = s.client.try_transfer_recipient(&Address::generate(&s.env));
+    assert_eq!(result, Err(Ok(Error::StreamEnded)));
+}
+
 // ── Pause / Resume ────────────────────────────────────────────────────────────
 
 #[test]
@@ -157,6 +198,29 @@ fn pause_freezes_withdrawable() {
     s.client.pause(&s.sender);
     s.advance_secs(500); // time passes but stream is paused
     assert_eq!(s.client.withdrawable(), before_pause); // unchanged
+}
+
+/// Regression for #350: a stream that is left paused must keep freezing
+/// accrual at `paused_at` even after ledger time passes `end_time`. Before
+/// this fix the `end_time` clamp was evaluated before the pause clamp, so once
+/// `now > end_time` a never-resumed pause reported the full contracted amount,
+/// letting the recipient withdraw everything (pause fully defeated) and
+/// understating the sender's refund on cancel.
+#[test]
+fn paused_stream_does_not_accrue_past_end_time() {
+    // 200s stream: start = 1_000_000, end = 1_000_200.
+    let s = Setup::new(100, 200, false);
+    s.advance_secs(50); // 50s elapsed → 5_000 owed
+    s.client.pause(&s.sender); // paused_at = 1_000_050
+
+    // Advance well past end_time (1_000_200 → now 1_000_550) without resuming.
+    s.advance_secs(500);
+    assert!(s.env.ledger().timestamp() > s.client.info().end_time);
+    assert!(s.client.info().is_paused());
+
+    // Still frozen at the 5_000 owed at pause time — NOT the full 20_000.
+    assert_eq!(s.client.withdrawable(), 5_000);
+    assert_eq!(s.client.streamed_total(), 5_000);
 }
 
 #[test]
@@ -284,6 +348,153 @@ fn clawback_disabled_panics() {
     assert_eq!(result, Err(Ok(Error::ClawbackDisabled)));
 }
 
+/// Regression test for #458.
+///
+/// Open-ended streams (`end_time == 0`) accrue indefinitely while their
+/// funded balance is finite. `clawback` must refund exactly the unstreamed
+/// remainder (balance − accrued-but-unwithdrawn) and must never touch the
+/// portion that has already accrued to the recipient.
+#[test]
+fn clawback_open_ended_refunds_unstreamed_remainder() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let sender = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token_addr = env
+        .register_stellar_asset_contract_v2(token_admin.clone())
+        .address();
+    let tok = token::Client::new(&env, &token_addr);
+    let tok_admin = token::StellarAssetClient::new(&env, &token_addr);
+
+    // rate = 100 stroops/s; deposit = 10_000 stroops → funds 100 s of streaming.
+    let rate: i128 = 100;
+    let deposit: i128 = 10_000;
+    let now: u64 = 1_000_000;
+
+    env.ledger().set(LedgerInfo {
+        timestamp: now,
+        protocol_version: 21,
+        sequence_number: 1,
+        network_id: Default::default(),
+        base_reserve: 10,
+        min_temp_entry_ttl: 16,
+        min_persistent_entry_ttl: 4096,
+        max_entry_ttl: 6_312_000,
+    });
+
+    let stream_id = env.register_contract(None, DripStream);
+    let client = DripStreamClient::new(&env, &stream_id);
+
+    tok_admin.mint(&sender, &deposit);
+    tok.transfer(&sender, &stream_id, &deposit);
+
+    client.initialize(
+        &sender,
+        &recipient,
+        &token_addr,
+        &rate,
+        &now,
+        &0, // open-ended — no end_time
+        &true,
+        &2_592_000_u64,
+    );
+
+    // Advance 30 s → 3_000 stroops have accrued to the recipient.
+    env.ledger().set(LedgerInfo {
+        timestamp: now + 30,
+        ..env.ledger().get()
+    });
+
+    let accrued: i128 = rate * 30; // 3_000
+    let expected_refund = deposit - accrued; // 7_000
+
+    let sender_before = tok.balance(&sender);
+    let reclaimed = client.clawback(&sender);
+
+    // Clawback returns exactly the unstreamed remainder.
+    assert_eq!(reclaimed, expected_refund);
+    // Sender's wallet grew by the same amount.
+    assert_eq!(tok.balance(&sender) - sender_before, expected_refund);
+    // Accrued balance is still in the contract, available to the recipient.
+    assert_eq!(tok.balance(&stream_id), accrued);
+}
+
+/// Regression test for #458 — second invariant.
+///
+/// After a clawback on an open-ended stream the recipient can still
+/// withdraw every stroop that had already accrued before the clawback,
+/// but cannot withdraw more.
+#[test]
+fn clawback_open_ended_does_not_touch_accrued_funds() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let sender = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token_addr = env
+        .register_stellar_asset_contract_v2(token_admin.clone())
+        .address();
+    let tok = token::Client::new(&env, &token_addr);
+    let tok_admin = token::StellarAssetClient::new(&env, &token_addr);
+
+    let rate: i128 = 100;
+    let deposit: i128 = 10_000;
+    let now: u64 = 1_000_000;
+
+    env.ledger().set(LedgerInfo {
+        timestamp: now,
+        protocol_version: 21,
+        sequence_number: 1,
+        network_id: Default::default(),
+        base_reserve: 10,
+        min_temp_entry_ttl: 16,
+        min_persistent_entry_ttl: 4096,
+        max_entry_ttl: 6_312_000,
+    });
+
+    let stream_id = env.register_contract(None, DripStream);
+    let client = DripStreamClient::new(&env, &stream_id);
+
+    tok_admin.mint(&sender, &deposit);
+    tok.transfer(&sender, &stream_id, &deposit);
+
+    client.initialize(
+        &sender,
+        &recipient,
+        &token_addr,
+        &rate,
+        &now,
+        &0, // open-ended
+        &true,
+        &2_592_000_u64,
+    );
+
+    // Advance 50 s → 5_000 stroops accrued.
+    env.ledger().set(LedgerInfo {
+        timestamp: now + 50,
+        ..env.ledger().get()
+    });
+
+    let accrued: i128 = rate * 50; // 5_000
+
+    // Sender claws back the unstreamed half.
+    client.clawback(&sender);
+
+    // Time is frozen; withdrawable must equal the full accrued amount.
+    assert_eq!(client.withdrawable(), accrued);
+
+    // Recipient can withdraw every accrued stroop.
+    let withdrawn = client.withdraw(&accrued);
+    assert_eq!(withdrawn, accrued);
+    assert_eq!(tok.balance(&recipient), accrued);
+
+    // Nothing left to withdraw.
+    assert_eq!(client.withdrawable(), 0);
+}
+
 // ── Top-up ────────────────────────────────────────────────────────────────────
 
 #[test]
@@ -362,6 +573,7 @@ fn initialize_rejects_zero_rate() {
         &now,
         &(now + 3_600),
         &false,
+        &2_592_000_u64,
     );
 }
 
@@ -390,6 +602,7 @@ fn initialize_rejects_negative_rate() {
         &now,
         &(now + 3_600),
         &false,
+        &2_592_000_u64,
     );
 }
 
@@ -403,8 +616,16 @@ fn re_initializing_an_active_stream_panics() {
     // must be rejected — otherwise they could redirect the escrowed balance
     // to themselves via cancel()/clawback().
     let attacker = Address::generate(&s.env);
-    s.client
-        .initialize(&attacker, &attacker, &s.token.address, &1, &0, &0, &false);
+    s.client.initialize(
+        &attacker,
+        &attacker,
+        &s.token.address,
+        &1,
+        &0,
+        &0,
+        &false,
+        &2_592_000_u64,
+    );
 }
 
 // ── Time-range boundary guard (issue #81) ────────────────────────────────────
@@ -438,6 +659,7 @@ fn initialize_rejects_end_time_before_start() {
         &now,           // start_time
         &(now - 3_600), // end_time BEFORE start_time → malformed
         &false,
+        &2_592_000_u64,
     );
 }
 
@@ -469,6 +691,7 @@ fn initialize_rejects_end_time_equal_start() {
         &now, // start_time
         &now, // end_time == start_time → zero-duration, malformed
         &false,
+        &2_592_000_u64,
     );
 }
 
@@ -497,6 +720,7 @@ fn initialize_rejects_overflowing_total_obligation() {
         &start_time,
         &(start_time + 2),
         &false,
+        &2_592_000_u64,
     );
 }
 
@@ -527,6 +751,7 @@ fn initialize_accepts_open_ended_stream() {
         &now,
         &0, // open-ended → valid
         &false,
+        &2_592_000_u64,
     );
 
     let inf = client.info();
@@ -679,6 +904,52 @@ fn info_reflects_pause_state() {
     assert!(inf.paused_at > 0);
 }
 
+#[test]
+#[should_panic(expected = "Error(Contract, #18)")]
+fn uninitialized_stream_info_returns_not_initialized() {
+    let env = Env::default();
+
+    let stream_id = env.register_contract(None, DripStream);
+    let client = DripStreamClient::new(&env, &stream_id);
+
+    client.info();
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #18)")]
+fn uninitialized_stream_withdrawable_returns_not_initialized() {
+    let env = Env::default();
+
+    let stream_id = env.register_contract(None, DripStream);
+    let client = DripStreamClient::new(&env, &stream_id);
+
+    client.withdrawable();
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #18)")]
+fn uninitialized_stream_streamed_total_returns_not_initialized() {
+    let env = Env::default();
+
+    let stream_id = env.register_contract(None, DripStream);
+    let client = DripStreamClient::new(&env, &stream_id);
+
+    client.streamed_total();
+}
+
+#[test]
+fn uninitialized_stream_mutations_return_not_initialized() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let stream_id = env.register_contract(None, DripStream);
+    let client = DripStreamClient::new(&env, &stream_id);
+    let caller = Address::generate(&env);
+
+    assert_eq!(client.try_withdraw(&1), Err(Ok(Error::NotInitialized)));
+    assert_eq!(client.try_cancel(&caller), Err(Ok(Error::NotInitialized)));
+}
+
 // ── Edge cases ────────────────────────────────────────────────────────────────
 
 #[test]
@@ -801,7 +1072,16 @@ fn extend_duration_rejected_for_open_ended() {
     let stream_id = env.register_contract(None, DripStream);
     let client = DripStreamClient::new(&env, &stream_id);
 
-    client.initialize(&sender, &recipient, &token_addr, &100, &now, &0, &false);
+    client.initialize(
+        &sender,
+        &recipient,
+        &token_addr,
+        &100,
+        &now,
+        &0,
+        &false,
+        &2_592_000_u64,
+    );
 
     let result = client.try_extend_duration(&sender, &100);
     assert_eq!(result, Err(Ok(Error::InvalidTimeRange)));
@@ -824,7 +1104,9 @@ fn extend_duration_rejects_on_arithmetic_overflow() {
     let stream_id = env.register_contract(None, DripStream);
     let client = DripStreamClient::new(&env, &stream_id);
 
-    // Use an extremely large rate so (rate × 2) overflows i128
+    // A 1-second stream at the maximum rate: the initial obligation
+    // (rate × 1) does not overflow, so `initialize` accepts it, but
+    // extending by 2 s makes `extra_time_seconds × rate` overflow i128.
     let huge_rate: i128 = i128::MAX;
     client.initialize(
         &sender,
@@ -832,8 +1114,9 @@ fn extend_duration_rejects_on_arithmetic_overflow() {
         &token_addr,
         &huge_rate,
         &now,
-        &(now + 10),
+        &(now + 1),
         &false,
+        &2_592_000_u64,
     );
 
     let result = client.try_extend_duration(&sender, &2);
@@ -962,6 +1245,41 @@ fn force_cancel_commits_state_and_drains_balance() {
     assert_eq!(paid_to_sender + paid_to_recipient, escrowed);
     // `withdrawn` reflects the tokens the recipient received in force_cancel.
     assert_eq!(s.client.info().withdrawn, 100_000);
+}
+
+/// `force_cancel()` must succeed at exactly `pause_start + threshold`:
+/// `_force_cancel` rejects with `PauseThresholdNotMet` only when
+/// `now - paused_at < PAUSE_THRESHOLD_SECS`, so the boundary value itself is
+/// accepted rather than one second short of it.
+#[test]
+fn force_cancel_succeeds_at_exact_pause_threshold() {
+    // 60-day stream keeps end_time beyond the 30-day pause threshold so the
+    // pause branch is the operative one.
+    let s = Setup::new(100, 5_184_000, false);
+    s.client.pause(&s.sender);
+    s.advance_secs(2_592_000); // ledger time == pause_start + threshold
+
+    s.client.force_cancel();
+
+    assert!(s.client.info().is_cancelled());
+    assert_eq!(s.token.balance(&s.client.address), 0);
+}
+
+/// `force_cancel()` must be rejected at `pause_start + threshold - 1`: one
+/// second before the threshold the pause has not elapsed long enough, and the
+/// stream must remain paused and unsettled.
+#[test]
+fn force_cancel_rejected_one_second_before_pause_threshold() {
+    let s = Setup::new(100, 5_184_000, false);
+    s.client.pause(&s.sender);
+    s.advance_secs(2_591_999); // ledger time == pause_start + threshold - 1
+
+    assert_eq!(
+        s.client.try_force_cancel(),
+        Err(Ok(Error::PauseThresholdNotMet))
+    );
+    assert!(!s.client.info().is_cancelled());
+    assert!(s.client.info().is_paused());
 }
 
 /// Every value-moving entry point must reject an already-cancelled stream.
@@ -1110,7 +1428,16 @@ fn top_up_and_extend_rejected_for_open_ended_stream() {
     let stream_id = env.register_contract(None, DripStream);
     let client = DripStreamClient::new(&env, &stream_id);
 
-    client.initialize(&sender, &recipient, &token_addr, &100, &now, &0, &false);
+    client.initialize(
+        &sender,
+        &recipient,
+        &token_addr,
+        &100,
+        &now,
+        &0,
+        &false,
+        &2_592_000_u64,
+    );
 
     let result = client.try_top_up_and_extend(&sender, &10_000, &100);
     assert_eq!(result, Err(Ok(Error::InvalidTimeRange)));
@@ -1151,15 +1478,40 @@ fn set_operator_rejects_on_cancelled_stream() {
 }
 
 #[test]
-fn set_operator_requires_revoke_before_replacement() {
+fn set_operator_replaces_existing_operator_atomically() {
+    // Issue #417: set_operator should replace an existing operator in one call,
+    // allowing atomic key rotation without a no-operator gap.
     let s = Setup::new(100, 3600, false);
     let op1 = Address::generate(&s.env);
     let op2 = Address::generate(&s.env);
+
+    // Set initial operator
     s.client.set_operator(&s.sender, &op1);
     assert_eq!(s.client.operator(), Some(op1.clone()));
-    let result = s.client.try_set_operator(&s.sender, &op2);
-    assert_eq!(result, Err(Ok(Error::OperatorAlreadySet)));
-    assert_eq!(s.client.operator(), Some(op1));
+
+    // Replace with a different operator - should succeed now
+    s.client.set_operator(&s.sender, &op2);
+    assert_eq!(s.client.operator(), Some(op2.clone()));
+
+    // Verify we can replace again
+    let op3 = Address::generate(&s.env);
+    s.client.set_operator(&s.sender, &op3);
+    assert_eq!(s.client.operator(), Some(op3.clone()));
+}
+
+#[test]
+fn set_operator_is_idempotent_for_same_address() {
+    // Issue #417: Setting the same operator twice should be idempotent.
+    // The early return keeps this operation idempotent.
+    let s = Setup::new(100, 3600, false);
+    let operator = Address::generate(&s.env);
+
+    s.client.set_operator(&s.sender, &operator);
+    assert_eq!(s.client.operator(), Some(operator.clone()));
+
+    // Setting the same operator again should succeed without error
+    s.client.set_operator(&s.sender, &operator);
+    assert_eq!(s.client.operator(), Some(operator));
 }
 
 #[test]
@@ -1292,6 +1644,26 @@ fn operator_passes_auth_gate_for_top_up() {
 
     let result = s.client.try_top_up(&operator, &1_000);
     assert_eq!(result, Err(Ok(Error::StreamCancelled)));
+}
+
+#[test]
+fn operator_can_extend_duration() {
+    let s = Setup::new(100, 3_600, false);
+    let operator = Address::generate(&s.env);
+    s.client.set_operator(&s.sender, &operator);
+
+    let before_end = s.client.info().end_time;
+    // extend_duration transfers the required deposit (100s × rate 100 =
+    // 10_000) from the *caller* — here the operator — so fund the operator
+    // (see _extend_duration / #431).
+    let token_admin = token::StellarAssetClient::new(&s.env, &s.token.address);
+    token_admin.mint(&operator, &10_000);
+
+    let contract_before = s.token.balance(&s.client.address);
+    s.client.extend_duration(&operator, &100);
+
+    assert_eq!(s.client.info().end_time, before_end + 100);
+    assert_eq!(s.token.balance(&s.client.address), contract_before + 10_000);
 }
 
 #[test]
@@ -1494,3 +1866,296 @@ fn sender_still_can_pause_after_setting_operator() {
 // satisfy this auth because they are not the recipient. This is already covered
 // by the existing withdraw tests (which always pass recipient auth) and would
 // require disabling mock_all_auths() to test negative cases properly.
+// ── State storage: save() writes only Config; legacy keys are cleaned ─────────
+//
+// `save()` used to mirror the 9 individual per-field keys alongside the
+// consolidated `Config` on every mutation, but `load()` reads `Config` on its
+// fast path (always true for post-consolidation streams). Those mirrors were
+// never read — pure write/rent overhead on every state mutation. `save()` now
+// writes only `Config` and, on the first `save()` of a pre-consolidation
+// stream, removes the legacy keys one-time.
+
+#[test]
+fn initialize_writes_only_config_and_not_legacy_keys() {
+    let s = Setup::new(100, 3600, false);
+
+    let (has_config, has_sender, has_withdrawn, has_flags) =
+        s.env.as_contract(&s.client.address, || {
+            let storage = s.env.storage().instance();
+            (
+                storage.has(&DataKey::Config),
+                storage.has(&DataKey::Sender),
+                storage.has(&DataKey::Withdrawn),
+                storage.has(&DataKey::Flags),
+            )
+        });
+
+    assert!(
+        has_config,
+        "consolidated Config must be written on initialize"
+    );
+    assert!(!has_sender, "legacy Sender key must not be written");
+    assert!(!has_withdrawn, "legacy Withdrawn key must not be written");
+    assert!(!has_flags, "legacy Flags key must not be written");
+
+    // initialize() must still expose the full state via load()/info().
+    let info = s
+        .env
+        .as_contract(&s.client.address, || crate::state::load(&s.env));
+    assert_eq!(info.rate_per_second, 100);
+    assert!(!info.is_clawback_enabled());
+}
+
+#[test]
+fn event_sequence_is_persisted_in_config_and_not_left_as_legacy_state() {
+    let s = Setup::new(100, 3600, false);
+    s.advance_secs(100);
+    s.client.pause(&s.sender);
+    s.client.resume(&s.sender);
+
+    let (has_config, has_event_sequence) = s.env.as_contract(&s.client.address, || {
+        let storage = s.env.storage().instance();
+        (
+            storage.has(&DataKey::Config),
+            storage.has(&DataKey::EventSequence),
+        )
+    });
+
+    assert!(
+        has_config,
+        "Config must be present after event-driven updates"
+    );
+    assert!(
+        !has_event_sequence,
+        "EventSequence must be stored in Config rather than as a standalone legacy key"
+    );
+
+    let info = s
+        .env
+        .as_contract(&s.client.address, || crate::state::load(&s.env));
+    assert_eq!(
+        info.event_sequence, 3,
+        "pause/resume emits two events after init"
+    );
+    assert_eq!(s.client.event_sequence(), 3);
+}
+
+#[test]
+fn state_mutation_writes_only_config_not_legacy_keys() {
+    let s = Setup::new(100, 3600, false);
+    s.advance_secs(100);
+    s.client.withdraw(&10_000); // drives state::save
+
+    let (has_config, has_sender, has_withdrawn) = s.env.as_contract(&s.client.address, || {
+        let storage = s.env.storage().instance();
+        (
+            storage.has(&DataKey::Config),
+            storage.has(&DataKey::Sender),
+            storage.has(&DataKey::Withdrawn),
+        )
+    });
+    assert!(has_config, "Config must be present after a mutation");
+    assert!(
+        !has_sender,
+        "mutation must not resurrect the legacy Sender key"
+    );
+    assert!(
+        !has_withdrawn,
+        "mutation must not resurrect the legacy Withdrawn key"
+    );
+
+    // The mutation's effect must still be durable through Config.
+    let info = s
+        .env
+        .as_contract(&s.client.address, || crate::state::load(&s.env));
+    assert_eq!(info.withdrawn, 10_000);
+}
+
+#[test]
+fn save_migrates_legacy_keys_to_config_once() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let sender = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token_addr = env
+        .register_stellar_asset_contract_v2(token_admin.clone())
+        .address();
+    let stream_id = env.register_contract(None, DripStream);
+
+    // Simulate a pre-consolidation stream: only the per-field keys exist.
+    env.as_contract(&stream_id, || {
+        let storage = env.storage().instance();
+        storage.set(&DataKey::Sender, &sender);
+        storage.set(&DataKey::Recipient, &recipient);
+        storage.set(&DataKey::Token, &token_addr);
+        storage.set(&DataKey::RatePerSecond, &100_i128);
+        storage.set(&DataKey::StartTime, &1_000_000_u64);
+        storage.set(&DataKey::EndTime, &1_003_600_u64);
+        storage.set(&DataKey::Withdrawn, &0_i128);
+        storage.set(&DataKey::PausedAt, &0_u64);
+        storage.set(&DataKey::Flags, &0_u32);
+        assert!(!storage.has(&DataKey::Config));
+    });
+
+    // First save() supersedes the legacy keys and writes Config.
+    env.as_contract(&stream_id, || {
+        crate::state::save(
+            &env,
+            &crate::storage::StreamInfo {
+                sender: sender.clone(),
+                recipient: recipient.clone(),
+                token: token_addr.clone(),
+                rate_per_second: 100,
+                start_time: 1_000_000,
+                end_time: 1_003_600,
+                withdrawn: 0,
+                paused_at: 0,
+                flags: 0,
+                event_sequence: 0,
+            },
+        );
+    });
+
+    // Legacy keys removed, Config present, load() returns the right state.
+    env.as_contract(&stream_id, || {
+        let storage = env.storage().instance();
+        assert!(storage.has(&DataKey::Config));
+        assert!(!storage.has(&DataKey::Sender));
+        assert!(!storage.has(&DataKey::Recipient));
+        assert!(!storage.has(&DataKey::Withdrawn));
+        assert!(!storage.has(&DataKey::Flags));
+
+        let info = crate::state::load(&env);
+        assert_eq!(info.rate_per_second, 100);
+        assert_eq!(info.sender, sender);
+        assert_eq!(info.recipient, recipient);
+    });
+}
+
+#[test]
+fn save_migrates_legacy_per_field_keys_to_config() {
+    // Regression test for #468: a stream written with the old per-field
+    // keys (pre-consolidation) must be migrated to the single DataKey::Config
+    // on the first mutating call, and all legacy keys must be removed.
+    let s = Setup::new(100, 3600, false);
+    let env = &s.env;
+    let id = s.client.address.clone();
+
+    // Snapshot the canonical state, then remove the consolidated Config key
+    // and write the legacy per-field layout to simulate a v0 stream.
+    let info = s.client.info();
+    env.as_contract(&id, || {
+        let instance = env.storage().instance();
+        instance.remove(&DataKey::Config);
+        instance.set(&DataKey::Sender, &info.sender);
+        instance.set(&DataKey::Recipient, &info.recipient);
+        instance.set(&DataKey::Token, &info.token);
+        instance.set(&DataKey::RatePerSecond, &info.rate_per_second);
+        instance.set(&DataKey::StartTime, &info.start_time);
+        instance.set(&DataKey::EndTime, &info.end_time);
+        instance.set(&DataKey::Withdrawn, &info.withdrawn);
+        instance.set(&DataKey::PausedAt, &info.paused_at);
+        instance.set(&DataKey::Flags, &info.flags);
+        instance.set(&DataKey::EventSequence, &info.event_sequence);
+    });
+
+    // Trigger migration via a mutating method that calls state::save.
+    s.client.pause(&s.sender);
+
+    env.as_contract(&id, || {
+        let instance = env.storage().instance();
+        // After migration, Config must exist...
+        assert!(instance.has(&DataKey::Config));
+        // ...and every legacy key must be gone.
+        assert!(!instance.has(&DataKey::Sender));
+        assert!(!instance.has(&DataKey::Recipient));
+        assert!(!instance.has(&DataKey::Token));
+        assert!(!instance.has(&DataKey::RatePerSecond));
+        assert!(!instance.has(&DataKey::StartTime));
+        assert!(!instance.has(&DataKey::EndTime));
+        assert!(!instance.has(&DataKey::Withdrawn));
+        assert!(!instance.has(&DataKey::PausedAt));
+        assert!(!instance.has(&DataKey::Flags));
+        assert!(!instance.has(&DataKey::EventSequence));
+        assert!(!instance.has(&DataKey::ClawbackEnabled));
+        assert!(!instance.has(&DataKey::Cancelled));
+    });
+
+    // The migrated state should still be readable and correctly paused.
+    let migrated = s.client.info();
+    assert!(migrated.is_paused());
+    assert_eq!(migrated.sender, info.sender);
+    assert_eq!(migrated.recipient, info.recipient);
+    assert_eq!(migrated.flags, info.flags | FLAG_PAUSED);
+}
+
+#[test]
+fn flag_getters_map_to_correct_bit() {
+    // Regression test for the merged FLAG_ClAWBACK_ENABLED typo: a table-driven
+    // check guarantees each getter masks exactly the documented bit.
+    let env = Env::default();
+    let sender = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let token = Address::generate(&env);
+    let base = StreamInfo {
+        sender: sender.clone(),
+        recipient: recipient.clone(),
+        token: token.clone(),
+        rate_per_second: 1,
+        start_time: 0,
+        end_time: 1,
+        withdrawn: 0,
+        paused_at: 0,
+        flags: 0,
+        event_sequence: 0,
+    };
+
+    let cases: [(u32, fn(&StreamInfo) -> bool, &str); 3] = [
+        (FLAG_PAUSED, StreamInfo::is_paused, "paused"),
+        (
+            FLAG_CLAWBACK_ENABLED,
+            StreamInfo::is_clawback_enabled,
+            "clawback_enabled",
+        ),
+        (FLAG_CANCELLED, StreamInfo::is_cancelled, "cancelled"),
+    ];
+
+    for (flag, getter, name) in cases {
+        let mut info = base.clone();
+        info.flags = flag;
+        assert!(
+            getter(&info),
+            "is_{} must be true when flags={}",
+            name,
+            flag
+        );
+        info.flags = 0;
+        assert!(!getter(&info), "is_{} must be false when flags=0", name);
+    }
+}
+
+#[test]
+fn withdraw_remaining_is_zero_when_draining_full_balance() {
+    // Withdrawing the entire funded balance must not panic and must leave the
+    // `withdrawn` event's `remaining` field at 0, matching the contract's real
+    // post-withdrawal token balance (#415).
+    let s = Setup::new(100, 3600, false);
+    s.advance_secs(3600); // end reached; streamed == full deposit (360_000)
+    s.client.withdraw(&360_000);
+    let contract_after = s.token.balance(&s.client.address);
+    assert_eq!(contract_after, 0);
+
+    let all_events = s.env.events().all();
+    let stream_events: std::vec::Vec<_> = all_events
+        .iter()
+        .filter(|(contract, _, _)| contract == &s.client.address)
+        .collect();
+    let data: (i128, i128, i128) = stream_events[stream_events.len() - 1]
+        .2
+        .try_into_val(&s.env)
+        .unwrap();
+    let (_amount, _total, remaining) = data;
+    assert_eq!(remaining, 0);
+    assert_eq!(remaining, contract_after);
+}

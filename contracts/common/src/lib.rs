@@ -2,6 +2,8 @@
 
 //! Shared constants and utilities for the Drip protocol contracts.
 
+pub mod rbac;
+
 use soroban_sdk::{Address, Env};
 
 /// TTL threshold for instance storage extension.

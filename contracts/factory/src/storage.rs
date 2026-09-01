@@ -1,4 +1,4 @@
-use soroban_sdk::{contracttype, Address};
+use soroban_sdk::{contracttype, Address, Vec};
 
 /// Identifies which on-chain stream operation to estimate fees for.
 ///
@@ -82,24 +82,68 @@ pub struct FactoryStatus {
     pub protocol_fee_bps: Option<u32>,
 }
 
+/// A page of stream IDs returned by `streams_by_sender` / `streams_by_recipient`,
+/// paired with the total count so a caller can tell truncation from an
+/// exhausted history without a separate `stream_count_by_*` round-trip.
+///
+/// `ids.len()` is capped at [`crate::query::MAX_PAGE_SIZE`] (100) regardless of
+/// the requested `limit`. Compare `offset + ids.len()` against `total`: if it
+/// is less, more pages remain (whether because `limit` was clamped or the
+/// caller simply asked for a partial window).
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StreamPage {
+    pub ids: Vec<u64>,
+    /// Total number of streams for this sender/recipient, independent of
+    /// `offset`/`limit`. Equivalent to `stream_count_by_sender` /
+    /// `stream_count_by_recipient`.
+    pub total: u32,
+}
+
+/// Aggregate counters for the whole factory registry.
+///
+/// Maintained incrementally on every successful `create_stream` and
+/// factory-routed cancellation so dashboards can display totals without
+/// paging the entire sender/recipient index.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Aggregate {
+    /// Total number of streams ever created through this factory.
+    /// Equivalent to the historical maximum of `StreamCount`.
+    pub total_supply: u64,
+    /// Number of streams that have not yet been cancelled.
+    /// Decremented by `cancel_batch_streams` and by the public
+    /// `record_cancel` hook for direct stream cancellations.
+    pub active_streams: u64,
+}
+
+/// Current storage layout version for this contract.
+///
+/// Written once at `initialize()` and checked by `upgrade()` before
+/// swapping the factory's own WASM, mirroring `DripStream::CURRENT_STORAGE_VERSION`.
+/// Bump this and add an explicit migration path whenever a future upgrade
+/// changes the shape of persisted state (`StreamCount`, `StreamAddr`, the
+/// paged `BySender*`/`ByRecipient*` indices, `LastBumpedId`, etc.).
+pub const CURRENT_STORAGE_VERSION: u32 = 1;
+
 /// Storage keys for the DripFactory contract.
 ///
 /// The `#[contracttype]` macro serializes each variant as an XDR tagged union:
 /// the discriminant (variant index) followed by the encoded inner type. This
 /// means `DataKey::StreamAddr(42)` and `DataKey::StreamAddr(43)` are distinct
-/// keys in Soroban's storage trie, each serialized as:
-///   [discriminant: u32][stream_id: u64]
+/// keys in Soroban's storage trie, each serialized as
+/// `[discriminant: u32][stream_id: u64]`.
 ///
-/// Similarly, `DataKey::BySender(address)` serializes as:
-///   [discriminant: u32][address: XDR-encoded Address]
+/// Similarly, `DataKey::BySender(address)` serializes as
+/// `[discriminant: u32][address: XDR-encoded Address]`.
 ///
 /// Storage is split across two tiers:
+///
 /// - **Instance storage**: Small, contract-scoped data that scales with the
 ///   number of operations (e.g., counters, config). Bounded by instance size limits.
 /// - **Persistent storage**: Per-entity data that grows without bound (e.g.,
 ///   per-stream addresses, per-user indices). Avoids hitting instance size limits
 ///   as the protocol scales. Each entry has its own TTL and can be extended independently.
-
 #[contracttype]
 pub enum DataKey {
     /// **Instance storage.** Monotonically incrementing stream counter.
@@ -158,6 +202,11 @@ pub enum DataKey {
     /// was bumped by the walker. Missing entry is treated as `0`.
     LastBumpedId,
 
+    /// **Instance storage.** Aggregate counters maintained on create/cancel.
+    /// Key: `DataKey::Aggregate` (no inner type, discriminant only)
+    /// Value: `Aggregate` — total supply and active-stream count.
+    Aggregate,
+
     /// **Instance storage.** Reentrancy guard for `create_stream`.
     /// Key: `DataKey::CreateLock` (no inner type, discriminant only)
     /// Value: `bool` — `true` while a `create_stream` call is mid-flight.
@@ -179,6 +228,22 @@ pub enum DataKey {
     /// Value: `Vec<u64>` — up to `query::MAX_PAGE_SIZE` stream IDs in creation order
     ByRecipientPage(Address, u32),
 
+    /// **Persistent storage.** Number of legacy sender entries already copied
+    /// into paged storage during an incremental migration.
+    BySenderMigrationCursor(Address),
+
+    /// **Persistent storage.** Original sender legacy-index length captured
+    /// when incremental migration starts.
+    BySenderLegacyCount(Address),
+
+    /// **Persistent storage.** Number of legacy recipient entries already copied
+    /// into paged storage during an incremental migration.
+    ByRecipientMigrationCursor(Address),
+
+    /// **Persistent storage.** Original recipient legacy-index length captured
+    /// when incremental migration starts.
+    ByRecipientLegacyCount(Address),
+
     /// **Persistent storage.** Total number of sender-indexed streams.
     /// Key: `DataKey::BySenderCount(Address)` — sender address
     /// Value: `u32` — total count used to derive page boundaries
@@ -188,4 +253,12 @@ pub enum DataKey {
     /// Key: `DataKey::ByRecipientCount(Address)` — recipient address
     /// Value: `u32` — total count used to derive page boundaries
     ByRecipientCount(Address),
+
+    /// **Instance storage.** Storage layout version this instance was
+    /// initialized with. Written once at `initialize()`; checked by
+    /// `upgrade()` before swapping WASM so an incompatible storage-layout
+    /// change cannot be deployed onto existing state silently.
+    /// Key: `DataKey::FactoryStorageVersion` (no inner type, discriminant only)
+    /// Value: `u32`
+    FactoryStorageVersion,
 }
