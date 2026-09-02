@@ -24,6 +24,9 @@ jobs:
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: conduit-contracts
+          cache-on-failure: true
 
       - name: Build (native — for tests)
         run: cargo build --all
@@ -58,6 +61,9 @@ jobs:
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: conduit-contracts
+          cache-on-failure: true
 
       - name: Clippy (all targets)
         run: cargo clippy --all-targets -- -D warnings
@@ -81,6 +87,9 @@ jobs:
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: conduit-contracts
+          cache-on-failure: true
 
       - name: Build all contracts (WASM)
         run: |
