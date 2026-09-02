@@ -384,6 +384,14 @@ impl DripGovernor {
         Ok(())
     }
 
+    /// Return the current number of `Admin` role holders.
+    ///
+    /// UIs and indexers can call this to show how many authorities exist
+    /// before proposing a transfer or revoking a role.
+    pub fn admin_count(env: Env) -> u32 {
+        role::admin_count(&env)
+    }
+
     // ── Self-upgrade (Admin-gated) ──────────────────────────────────────
 
     /// Replace this contract's own WASM bytecode.
