@@ -1,0 +1,16 @@
+#!/bin/sh
+# Pre-commit hook for conduit-contracts
+# Catches lint/format issues before they reach CI.
+#
+# To install:
+#   git config core.hooksPath .githooks
+
+set -e
+
+echo "[pre-commit] Running cargo fmt --check..."
+cargo fmt --all -- --check
+
+echo "[pre-commit] Running cargo clippy --all-targets -D warnings..."
+cargo clippy --all-targets --all-features -- -D warnings
+
+echo "[pre-commit] All checks passed."
