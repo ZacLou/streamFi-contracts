@@ -81,14 +81,17 @@ pub struct StreamInfo {
 }
 
 impl StreamInfo {
+    /// True when the `FLAG_PAUSED` bit (0x01) is set in `flags`.
     pub fn is_paused(&self) -> bool {
         (self.flags & FLAG_PAUSED) != 0
     }
 
+    /// True when the `FLAG_CANCELLED` bit (0x04) is set in `flags`.
     pub fn is_cancelled(&self) -> bool {
         (self.flags & FLAG_CANCELLED) != 0
     }
 
+    /// True when the `FLAG_CLAWBACK_ENABLED` bit (0x02) is set in `flags`.
     pub fn is_clawback_enabled(&self) -> bool {
         (self.flags & FLAG_CLAWBACK_ENABLED) != 0
     }
