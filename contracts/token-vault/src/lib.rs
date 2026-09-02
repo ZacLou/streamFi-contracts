@@ -344,6 +344,18 @@ impl TokenVault {
         get_owner(&env)
     }
 
+    /// Read-only: the pending owner address for an in-flight ownership transfer,
+    /// if any. Returns `None` when no transfer has been proposed.
+    pub fn pending_owner(env: Env) -> Option<Address> {
+        get_pending_owner(&env)
+    }
+
+    /// Read-only: the current owner who proposed the pending ownership transfer.
+    /// Returns `None` when no transfer has been proposed.
+    pub fn pending_owner_proposer(env: Env) -> Option<Address> {
+        get_pending_owner_proposer(&env)
+    }
+
     // ── Emergency pause (owner-gated) ─────────────────────────────────────
 
     /// Emergency halt: freeze all state-mutating operations.

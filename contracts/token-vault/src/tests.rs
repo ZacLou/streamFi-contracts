@@ -846,6 +846,29 @@ fn owner_can_propose_and_new_owner_accepts() {
 }
 
 #[test]
+fn pending_owner_and_proposer_are_readable() {
+    let s = Setup::new(1_000_000);
+    let new_owner = Address::generate(&s.env);
+
+    // Before any proposal, both getters return None.
+    assert_eq!(s.client.pending_owner(), None);
+    assert_eq!(s.client.pending_owner_proposer(), None);
+
+    s.client.propose_owner(&s.owner, &new_owner);
+
+    // After proposal, both getters reflect the pending state.
+    assert_eq!(s.client.pending_owner(), Some(new_owner.clone()));
+    assert_eq!(s.client.pending_owner_proposer(), Some(s.owner.clone()));
+
+    s.client.accept_owner(&new_owner);
+
+    // After acceptance, pending state is cleared.
+    assert_eq!(s.client.pending_owner(), None);
+    assert_eq!(s.client.pending_owner_proposer(), None);
+    assert_eq!(s.client.owner(), Some(new_owner));
+}
+
+#[test]
 fn propose_owner_rejects_zero_address() {
     let s = Setup::new(1_000_000);
     let zero = Address::from_string(&String::from_str(
