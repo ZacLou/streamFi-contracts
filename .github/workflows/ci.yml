@@ -29,10 +29,20 @@ jobs:
         run: cargo build --all
 
       - name: Run unit tests
-        run: cargo test --all --lib
+        run: cargo test --all --lib --no-fail-fast
 
       - name: Run integration tests
-        run: cargo test --all
+        run: cargo test --all --no-fail-fast
+
+      - name: Upload test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-report
+          path: |
+            target/nextest/default/junit.xml
+            target/debug/deps/*.stdout
+          retention-days: 7
 
   lint:
     name: Lint
