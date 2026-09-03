@@ -264,6 +264,18 @@ fn pause_before_start_rejected() {
 // ── Cancel ────────────────────────────────────────────────────────────────────
 
 #[test]
+#[test]
+fn pause_after_end_rejected() {
+    let s = Setup::new(100, 3600, false);
+    // Advance past the end time.
+    let mut ledger = s.env.ledger().get();
+    ledger.timestamp += 3601;
+    s.env.ledger().set(ledger);
+
+    let result = s.client.try_pause(&s.sender);
+    assert_eq!(result, Err(Ok(Error::StreamEnded)));
+}
+
 fn cancel_before_start_refunds_full_deposit() {
     let s = Setup::new(100, 3600, false);
     let deposit = 100 * 3600;
