@@ -12,7 +12,10 @@ env:
 
 jobs:
   test:
-    name: Test
+    strategy:
+      matrix:
+        soroban-version: ['21.0.0', '21.7.7']
+    name: Test (soroban-sdk ${{ matrix.soroban-version }})
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -25,7 +28,7 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
         with:
-          shared-key: conduit-contracts
+          shared-key: soroban-${{ matrix.soroban-version }}
           cache-on-failure: true
 
       - name: Build (native — for tests)
