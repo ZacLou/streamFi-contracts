@@ -621,3 +621,26 @@ fn append_refreshes_ttl_on_all_pages_not_just_newest() {
     });
     assert_eq!(count_remaining, ttl::EXTEND_TO);
 }
+
+// ── Gas / CPU-instruction regression test (issue #441) ─────────────────────
+
+#[test]
+fn read_index_cpu_instruction_regression() {
+    let (env, client, contract_id) = index_ttl_env();
+    let sender = seed_sender_pages(&env, &contract_id, 250);
+
+    // Reset budget tracker before the measured call.
+    env.budget().reset_tracker();
+
+    // Read a full page (100 entries) — this exercises read_index with
+    // legacy cursor + page traversal.
+    let _ = client.streams_by_sender(&sender, &0, &100);
+
+    let cpu = env.budget().cpu_instruction_cost();
+    // Threshold determined empirically: 250-entry index, full-page read.
+    // Fails if future changes silently blow the budget.
+    assert!(
+        cpu < 5_000_000,
+        "streams_by_sender full-page read consumed {cpu} CPU instructions, exceeds 2M regression threshold"
+    );
+}
