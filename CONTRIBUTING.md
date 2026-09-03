@@ -58,6 +58,16 @@ cargo clippy --all-targets --all-features -- -D warnings
 cargo fmt --all -- --check
 ```
 
+### Pre-commit hook (optional but recommended)
+
+A local hook is provided so lint / format issues are caught before you push:
+
+```bash
+git config core.hooksPath .githooks
+```
+
+This runs `cargo fmt --check` and `cargo clippy --all-targets -D warnings` on every commit.
+
 ### Local network
 
 ```bash

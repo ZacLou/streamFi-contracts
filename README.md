@@ -23,10 +23,24 @@ The core contract. One instance is deployed per payment stream. Holds the token 
 | `StartTime` | `u64` | Unix timestamp — stream begins |
 | `EndTime` | `u64` | Unix timestamp — stream ends (`0` = open-ended) |
 | `Withdrawn` | `i128` | Total withdrawn by recipient so far |
-| `Paused` | `bool` | Whether the stream is currently paused |
+| `Flags` | `u32` | Bit-packed state flags (see below) |
 | `PausedAt` | `u64` | Timestamp when stream was last paused |
-| `ClawbackEnabled` | `bool` | Whether sender can reclaim unstreamed tokens |
-| `Cancelled` | `bool` | Whether the stream has been cancelled |
+
+**`StreamInfo.flags` bit layout:**
+
+| Bit | Mask | Name | Meaning |
+|-----|------|------|---------|
+| 0 | `0x01` | `FLAG_PAUSED` | Stream is currently paused |
+| 1 | `0x02` | `FLAG_CLAWBACK_ENABLED` | Sender can reclaim unstreamed tokens |
+| 2 | `0x04` | `FLAG_CANCELLED` | Stream has been cancelled |
+
+Off-chain callers should use the `is_*()` getters on `StreamInfo` rather than reading the bit values directly:
+
+```rust
+info.is_paused()           // (info.flags & 0x01) != 0
+info.is_clawback_enabled() // (info.flags & 0x02) != 0
+info.is_cancelled()        // (info.flags & 0x04) != 0
+``` |
 
 **Public functions:**
 

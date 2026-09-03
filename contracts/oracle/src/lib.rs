@@ -1,7 +1,9 @@
 #![no_std]
 
 use drip_common::rbac;
-use soroban_sdk::{contract, contracterror, contractimpl, contracttype, Address, Env, Vec};
+use soroban_sdk::{
+    contract, contracterror, contractimpl, contracttype, symbol_short, Address, Env, Vec,
+};
 
 /// TTL extension constants matching the convention used across sibling
 /// contracts (factory, governor, stream). `bump_instance` is called from
@@ -432,11 +434,16 @@ impl TwapOracle {
     /// propagate into the TWAP window — see issue #226.
     pub fn submit_price(env: Env, caller: Address, price: u64) -> Result<(), Error> {
         if is_paused(&env) {
+            events::price_rejected(&env, &caller, price, symbol_short!("paused"));
             return Err(Error::ContractPaused);
         }
-        require_role(&env, &caller, Role::PriceFeeder)?;
+        if require_role(&env, &caller, Role::PriceFeeder).is_err() {
+            events::price_rejected(&env, &caller, price, symbol_short!("unauth"));
+            return Err(Error::NotAuthorized);
+        }
 
         if price == 0 {
+            events::price_rejected(&env, &caller, price, symbol_short!("zero"));
             return Err(Error::InvalidPrice);
         }
 
@@ -452,6 +459,7 @@ impl TwapOracle {
             .get::<_, OracleConfig>(&DataKey::Config)
         {
             if config.max_price != 0 && price > config.max_price {
+                events::price_rejected(&env, &caller, price, symbol_short!("max_price"));
                 return Err(Error::PriceExceedsMaxPrice);
             }
 
@@ -1055,6 +1063,13 @@ mod events {
         env.events()
             .publish((symbol_short!("ocfg"), caller.clone()), config);
     }
+
+    /// Emitted when a price submission is rejected so off-chain monitors
+    /// can alert without parsing error codes.
+    pub fn price_rejected(env: &Env, caller: &Address, price: u64, reason: soroban_sdk::Symbol) {
+        env.events()
+            .publish((symbol_short!("rej"), caller.clone()), (price, reason));
+    }
 }
 
 #[cfg(test)]
@@ -1236,7 +1251,7 @@ mod tests {
 
     #[test]
     fn submit_price_accepts_price_at_or_below_max_price() {
-        let (env, client, admin) = setup();
+        let (_env, client, admin) = setup();
         client.initialize(&admin);
         grant_admin_feeder(&client, &admin);
 
@@ -1260,7 +1275,7 @@ mod tests {
 
     #[test]
     fn submit_price_accepts_any_price_when_max_price_is_zero() {
-        let (env, client, admin) = setup();
+        let (_env, client, admin) = setup();
         client.initialize(&admin);
         grant_admin_feeder(&client, &admin);
 
@@ -1280,7 +1295,7 @@ mod tests {
 
     #[test]
     fn submit_price_without_config_has_no_ceiling() {
-        let (env, client, admin) = setup();
+        let (_env, client, admin) = setup();
         client.initialize(&admin);
         grant_admin_feeder(&client, &admin);
 
@@ -1470,6 +1485,8 @@ mod tests {
 
         let result = client.try_revoke_role(&admin, &Role::Admin, &admin);
         assert_eq!(result, Err(Ok(Error::LastAdmin)));
+        // State must be unchanged — the admin role must still be present.
+        assert!(client.has_role(&Role::Admin, &admin));
     }
 
     #[test]

@@ -568,10 +568,10 @@ impl DripFactory {
     /// from either can be resolved to addresses in one call instead of one
     /// `stream_address` round-trip per ID. Unknown IDs resolve to `None` in
     /// their slot, matching `stream_address`'s per-ID behavior, rather than
-    /// failing the whole batch. Capped at `MAX_BATCH_SIZE`, mirroring
-    /// `create_batch_streams`.
+    /// failing the whole batch. Capped at `query::MAX_PAGE_SIZE` so a full
+    /// page of 100 IDs can be resolved in a single call (fixes #418).
     pub fn stream_addresses(env: Env, ids: Vec<u64>) -> Result<Vec<Option<Address>>, Error> {
-        if ids.len() > MAX_BATCH_SIZE {
+        if ids.len() > query::MAX_PAGE_SIZE {
             return Err(Error::BatchTooLarge);
         }
         let mut out = Vec::new(&env);
