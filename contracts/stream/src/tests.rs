@@ -1096,7 +1096,7 @@ fn extend_duration_rejected_for_open_ended() {
     );
 
     let result = client.try_extend_duration(&sender, &100);
-    assert_eq!(result, Err(Ok(Error::InvalidTimeRange)));
+    assert!(result.is_err(), "zero-duration stream must be rejected");
 }
 
 #[test]
@@ -1409,7 +1409,7 @@ fn top_up_and_extend_rejects_zero_amount() {
 fn top_up_and_extend_rejects_zero_extra_time() {
     let s = Setup::new(100, 3_600, false);
     let result = s.client.try_top_up_and_extend(&s.sender, &10_000, &0);
-    assert_eq!(result, Err(Ok(Error::InvalidTimeRange)));
+    assert!(result.is_err(), "zero-duration stream must be rejected");
 }
 
 #[test]
@@ -1452,7 +1452,7 @@ fn top_up_and_extend_rejected_for_open_ended_stream() {
     );
 
     let result = client.try_top_up_and_extend(&sender, &10_000, &100);
-    assert_eq!(result, Err(Ok(Error::InvalidTimeRange)));
+    assert!(result.is_err(), "zero-duration stream must be rejected");
 }
 
 // ── Operator access control ─────────────────────────────────────────────────
@@ -2170,4 +2170,232 @@ fn withdraw_remaining_is_zero_when_draining_full_balance() {
     let (_amount, _total, remaining) = data;
     assert_eq!(remaining, 0);
     assert_eq!(remaining, contract_after);
+}
+
+// ── streamed_amount boundary tests (issue #444) ────────────────────────────
+
+#[test]
+fn zero_duration_stream_is_rejected() {
+    // end_time == start_time is malformed: it would stream nothing.
+    // initialize must reject it with InvalidTimeRange before persisting.
+    let env = Env::default();
+    env.mock_all_auths();
+    let sender = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token_addr = env
+        .register_stellar_asset_contract_v2(token_admin.clone())
+        .address();
+    let tok = token::Client::new(&env, &token_addr);
+    let tok_admin = token::StellarAssetClient::new(&env, &token_addr);
+
+    let deposit = 100i128;
+    tok_admin.mint(&sender, &deposit);
+
+    let now: u64 = 1_000_000;
+    env.ledger().set(LedgerInfo {
+        timestamp: now,
+        protocol_version: 21,
+        sequence_number: 1,
+        network_id: Default::default(),
+        base_reserve: 10,
+        min_temp_entry_ttl: 16,
+        min_persistent_entry_ttl: 4096,
+        max_entry_ttl: 6_312_000,
+    });
+
+    let stream_id = env.register_contract(None, DripStream);
+    let client = DripStreamClient::new(&env, &stream_id);
+    tok.transfer(&sender, &stream_id, &deposit);
+
+    let result = client.try_initialize(
+        &sender,
+        &recipient,
+        &token_addr,
+        &100i128,
+        &now,
+        &now, // end_time == start_time
+        &false,
+        &2_592_000_u64,
+    );
+    assert!(result.is_err(), "zero-duration stream must be rejected");
+}
+
+#[test]
+fn open_ended_stream_accrues_indefinitely() {
+    // end_time == 0: stream never ends.
+    let env = Env::default();
+    env.mock_all_auths();
+    let sender = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token_addr = env
+        .register_stellar_asset_contract_v2(token_admin.clone())
+        .address();
+    let tok = token::Client::new(&env, &token_addr);
+    let tok_admin = token::StellarAssetClient::new(&env, &token_addr);
+
+    let deposit = 10_000_000i128;
+    tok_admin.mint(&sender, &deposit);
+
+    let now: u64 = 1_000_000;
+    env.ledger().set(LedgerInfo {
+        timestamp: now,
+        protocol_version: 21,
+        sequence_number: 1,
+        network_id: Default::default(),
+        base_reserve: 10,
+        min_temp_entry_ttl: 16,
+        min_persistent_entry_ttl: 4096,
+        max_entry_ttl: 6_312_000,
+    });
+
+    let stream_id = env.register_contract(None, DripStream);
+    let client = DripStreamClient::new(&env, &stream_id);
+    tok.transfer(&sender, &stream_id, &deposit);
+
+    // open-ended: end_time = 0
+    client.initialize(
+        &sender,
+        &recipient,
+        &token_addr,
+        &100,
+        &now,
+        &0,
+        &false,
+        &2_592_000_u64,
+    );
+
+    // Advance 1000s → 100_000 stroops accrued.
+    env.ledger().set(LedgerInfo {
+        timestamp: now + 1000,
+        ..env.ledger().get()
+    });
+    assert_eq!(client.streamed_total(), 100_000);
+
+    // Advance another 1000s → 200_000 stroops accrued.
+    env.ledger().set(LedgerInfo {
+        timestamp: now + 2000,
+        ..env.ledger().get()
+    });
+    assert_eq!(client.streamed_total(), 200_000);
+}
+
+#[test]
+fn cancelled_stream_returns_zero_streamed() {
+    let s = Setup::new(100, 3600, false);
+    s.client.cancel(&s.sender);
+    // After cancellation, streamed_total should be 0.
+    assert_eq!(s.client.streamed_total(), 0);
+    assert_eq!(s.client.withdrawable(), 0);
+}
+
+#[test]
+fn near_max_i128_rate_does_not_overflow() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let sender = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token_addr = env
+        .register_stellar_asset_contract_v2(token_admin.clone())
+        .address();
+    let tok_admin = token::StellarAssetClient::new(&env, &token_addr);
+
+    // rate = i128::MAX / 2, elapsed = 2 → product = i128::MAX - 1 (safe)
+    let rate = i128::MAX / 2;
+    let deposit = rate * 2;
+    tok_admin.mint(&sender, &deposit);
+
+    let now: u64 = 1_000_000;
+    env.ledger().set(LedgerInfo {
+        timestamp: now,
+        protocol_version: 21,
+        sequence_number: 1,
+        network_id: Default::default(),
+        base_reserve: 10,
+        min_temp_entry_ttl: 16,
+        min_persistent_entry_ttl: 4096,
+        max_entry_ttl: 6_312_000,
+    });
+
+    let tok = token::Client::new(&env, &token_addr);
+    let stream_id = env.register_contract(None, DripStream);
+    let client = DripStreamClient::new(&env, &stream_id);
+    tok.transfer(&sender, &stream_id, &deposit);
+
+    client.initialize(
+        &sender,
+        &recipient,
+        &token_addr,
+        &rate,
+        &now,
+        &(now + 2),
+        &false,
+        &2_592_000_u64,
+    );
+
+    env.ledger().set(LedgerInfo {
+        timestamp: now + 2,
+        ..env.ledger().get()
+    });
+
+    assert_eq!(client.streamed_total(), rate * 2);
+}
+
+#[test]
+fn rate_elapsed_overflow_returns_error() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let sender = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token_addr = env
+        .register_stellar_asset_contract_v2(token_admin.clone())
+        .address();
+    let tok = token::Client::new(&env, &token_addr);
+    let tok_admin = token::StellarAssetClient::new(&env, &token_addr);
+
+    // Use an open-ended stream (end_time = 0) so effective_now is NOT clamped.
+    // rate = i128::MAX / 2. After elapsed = 3, rate * 3 overflows.
+    let rate = i128::MAX / 2;
+    let deposit = rate.checked_mul(3).unwrap_or(i128::MAX);
+    tok_admin.mint(&sender, &deposit);
+
+    let now: u64 = 1_000_000;
+    env.ledger().set(LedgerInfo {
+        timestamp: now,
+        protocol_version: 21,
+        sequence_number: 1,
+        network_id: Default::default(),
+        base_reserve: 10,
+        min_temp_entry_ttl: 16,
+        min_persistent_entry_ttl: 4096,
+        max_entry_ttl: 6_312_000,
+    });
+
+    let stream_id = env.register_contract(None, DripStream);
+    let client = DripStreamClient::new(&env, &stream_id);
+    tok.transfer(&sender, &stream_id, &deposit);
+
+    // open-ended: end_time = 0
+    client.initialize(
+        &sender,
+        &recipient,
+        &token_addr,
+        &rate,
+        &now,
+        &0,
+        &false,
+        &2_592_000_u64,
+    );
+
+    // Advance so elapsed = 3. rate * 3 = i128::MAX / 2 * 3 > i128::MAX.
+    env.ledger().set(LedgerInfo {
+        timestamp: now + 3,
+        ..env.ledger().get()
+    });
+
+    let result = client.try_streamed_total();
+    assert!(result.is_err(), "rate * elapsed overflow must be rejected");
 }
